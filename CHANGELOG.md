@@ -1,3 +1,10 @@
+## [0.1.21](https://github.com/timoa/workflow-metrics/compare/v0.1.20...v0.1.21) (2026-06-12)
+
+
+### Bug Fixes
+
+* **deps:** clear vitest critical and devalue high vulnerabilities ([7b6a89d](https://github.com/timoa/workflow-metrics/commit/7b6a89d6bae109dbfe11a5fe2b1db7091c94570d))
+
 ## [0.1.20](https://github.com/timoa/workflow-metrics/compare/v0.1.19...v0.1.20) (2026-05-05)
 
 
