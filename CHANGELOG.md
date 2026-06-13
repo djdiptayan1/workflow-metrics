@@ -1,3 +1,11 @@
+## [0.1.22](https://github.com/timoa/workflow-metrics/compare/v0.1.21...v0.1.22) (2026-06-13)
+
+
+### Bug Fixes
+
+* **build:** migrate pnpm config to pnpm-workspace.yaml ([e3b8475](https://github.com/timoa/workflow-metrics/commit/e3b8475ac680428aacf517bd0cd4340d0bb04719))
+* **deps:** override esbuild to 0.28.1 (GHSA-gv7w-rqvm-qjhr) ([551c2a2](https://github.com/timoa/workflow-metrics/commit/551c2a21d2f332184aa924199f66038cfcf1dd23))
+
 ## [0.1.21](https://github.com/timoa/workflow-metrics/compare/v0.1.20...v0.1.21) (2026-06-12)
 
 
