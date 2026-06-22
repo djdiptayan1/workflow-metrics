@@ -1,3 +1,11 @@
+## [0.1.23](https://github.com/timoa/workflow-metrics/compare/v0.1.22...v0.1.23) (2026-06-22)
+
+
+### Bug Fixes
+
+* **deps:** patch high-severity vulnerabilities (ws, undici, vite) ([9ee9a87](https://github.com/timoa/workflow-metrics/commit/9ee9a8709e9d7a01d91baddb8959ce3c997792a2)), closes [hi#severity](https://github.com/hi/issues/severity)
+* **deps:** update dependency yaml to v2.9.0 ([f4d6417](https://github.com/timoa/workflow-metrics/commit/f4d64177d2906ed1eebd12fafe6641247d8132d7))
+
 ## [0.1.22](https://github.com/timoa/workflow-metrics/compare/v0.1.21...v0.1.22) (2026-06-13)
 
 
