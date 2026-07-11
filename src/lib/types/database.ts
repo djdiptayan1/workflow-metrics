@@ -72,8 +72,13 @@ export interface Database {
 					id: string;
 					user_id: string;
 					mistral_api_key: string | null;
+					ai_provider: 'openai' | 'gemini';
+					ai_api_key: string | null;
+					ai_model: string | null;
 					theme: 'dark' | 'light' | 'system';
 					default_repo_id: string | null;
+					actions_lookback: '7' | '30' | '90' | 'all';
+					dashboard_refresh_interval: 'realtime' | '5' | '10' | '15';
 					created_at: string;
 					updated_at: string;
 				};
@@ -81,15 +86,25 @@ export interface Database {
 					id?: string;
 					user_id: string;
 					mistral_api_key?: string | null;
+					ai_provider?: 'openai' | 'gemini';
+					ai_api_key?: string | null;
+					ai_model?: string | null;
 					theme?: 'dark' | 'light' | 'system';
 					default_repo_id?: string | null;
+					actions_lookback?: '7' | '30' | '90' | 'all';
+					dashboard_refresh_interval?: 'realtime' | '5' | '10' | '15';
 					created_at?: string;
 					updated_at?: string;
 				};
 				Update: {
 					mistral_api_key?: string | null;
+					ai_provider?: 'openai' | 'gemini';
+					ai_api_key?: string | null;
+					ai_model?: string | null;
 					theme?: 'dark' | 'light' | 'system';
 					default_repo_id?: string | null;
+					actions_lookback?: '7' | '30' | '90' | 'all';
+					dashboard_refresh_interval?: 'realtime' | '5' | '10' | '15';
 					updated_at?: string;
 				};
 			};
@@ -116,6 +131,18 @@ export interface Database {
 					workflow_name?: string;
 					workflow_path?: string;
 				};
+			};
+			repository_workflow_settings: {
+				Row: { github_repo_id: number; preferences_mode: 'personal' | 'shared'; updated_by: string | null; updated_at: string };
+				Insert: { github_repo_id: number; preferences_mode?: 'personal' | 'shared'; updated_by?: string | null; updated_at?: string };
+				Update: { preferences_mode?: 'personal' | 'shared'; updated_by?: string | null; updated_at?: string };
+				Relationships: [];
+			};
+			workflow_preferences: {
+				Row: { id: string; github_repo_id: number; user_id: string | null; workflow_id: number; is_pinned: boolean; environment: 'production' | 'development' | 'unknown'; updated_by: string | null; updated_at: string };
+				Insert: { id?: string; github_repo_id: number; user_id?: string | null; workflow_id: number; is_pinned?: boolean; environment?: 'production' | 'development' | 'unknown'; updated_by?: string | null; updated_at?: string };
+				Update: { is_pinned?: boolean; environment?: 'production' | 'development' | 'unknown'; updated_by?: string | null; updated_at?: string };
+				Relationships: [];
 			};
 		};
 		Views: Record<string, never>;

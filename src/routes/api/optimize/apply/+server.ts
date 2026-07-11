@@ -1,6 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
-import { generateOptimizedYaml } from '$lib/server/mistral';
+import { generateOptimizedYaml, type AIProvider } from '$lib/server/mistral';
 import { getInstallationForOwner, getInstallationToken } from '$lib/server/github-app';
 import { Octokit } from '@octokit/rest';
 import type { RequestHandler } from './$types';
@@ -82,12 +82,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	const { data: settings } = await locals.supabase
 		.from('user_settings')
-		.select('mistral_api_key')
+		.select('ai_provider, ai_api_key, ai_model')
 		.eq('user_id', user.id)
 		.single();
 
-	if (!settings?.mistral_api_key) {
-		throw error(400, 'Mistral API key not configured. Add it in Settings.');
+	if (!settings?.ai_api_key) {
+		throw error(400, 'AI API key not configured. Add it in Settings.');
 	}
 
 	const appId = env.GITHUB_APP_ID;
@@ -222,14 +222,16 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		let stepYaml: string;
 		try {
 			stepYaml = await generateOptimizedYaml(
-				settings.mistral_api_key,
+				settings.ai_api_key,
 				workflowName,
 				currentYaml,
-				[optimization]
+				[optimization],
+				(settings.ai_provider ?? 'openai') as AIProvider,
+				settings.ai_model
 			);
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
-			throw error(500, `Mistral failed for "${optimization.title}": ${msg}`);
+			throw error(500, `AI generation failed for "${optimization.title}": ${msg}`);
 		}
 
 		const commitBodyLines = [

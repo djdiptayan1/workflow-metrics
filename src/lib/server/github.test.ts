@@ -211,6 +211,22 @@ describe('fetchAllWorkflowRunsForRepo', () => {
 		await fetchAllWorkflowRunsForRepo(octokit, 'owner', 'repo', '>=2024-01-01', undefined, onProgress);
 		expect(onProgress).toHaveBeenCalledWith(1, 1, 1);
 	});
+
+	it('omits the created filter when importing all available history', async () => {
+		const octokit = createOctokit('test-token');
+		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockResolvedValue({
+			data: { workflow_runs: [], total_count: 0 }
+		} as never);
+
+		await fetchAllWorkflowRunsForRepo(octokit, 'owner', 'repo');
+
+		expect(octokit.rest.actions.listWorkflowRunsForRepo).toHaveBeenCalledWith({
+			owner: 'owner',
+			repo: 'repo',
+			per_page: 100,
+			page: 1
+		});
+	});
 });
 
 describe('fetchSingleWorkflowRuns', () => {
@@ -315,7 +331,7 @@ describe('fetchWorkflowFileCommits', () => {
 });
 
 describe('buildDashboardData', () => {
-	it('excludes reusable workflows (prefixed with _) from all dashboard metrics', async () => {
+	it('preserves run history when a workflow is absent from the current workflow list', async () => {
 		const octokit = createOctokit('test-token');
 		const mockWorkflows: GitHubWorkflow[] = [
 			{ id: 1, name: 'CI', path: '.github/workflows/ci.yml', state: 'active' } as GitHubWorkflow,
@@ -358,10 +374,74 @@ describe('buildDashboardData', () => {
 
 		const result = await buildDashboardData(octokit, 'owner', 'repo', { days: 7 });
 
-		expect(result.workflowMetrics).toHaveLength(1);
+		expect(result.workflowMetrics).toHaveLength(2);
 		expect(result.workflowMetrics[0].workflowId).toBe(1);
 		expect(result.activeWorkflows).toBe(1);
+		expect(result.totalRuns).toBe(2);
+	});
+
+	it('imports old runs when all-time history is requested', async () => {
+		const octokit = createOctokit('test-token');
+		const oldRun = {
+			id: 1,
+			name: 'CI',
+			workflow_id: 1,
+			status: 'completed',
+			conclusion: 'success',
+			created_at: '2024-01-01T00:00:00Z',
+			updated_at: '2024-01-01T00:01:00Z',
+			run_started_at: '2024-01-01T00:00:00Z'
+		} as GitHubWorkflowRun;
+
+		vi.mocked(octokit.rest.actions.listRepoWorkflows).mockResolvedValue({
+			data: {
+				workflows: [
+					{ id: 1, name: 'CI', path: '.github/workflows/ci.yml', state: 'active' }
+				]
+			}
+		} as never);
+		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockResolvedValue({
+			data: { workflow_runs: [oldRun], total_count: 1 }
+		} as never);
+		vi.mocked(octokit.rest.repos.listCommits).mockResolvedValue({ data: [] } as never);
+		vi.mocked(octokit.rest.repos.getContent).mockResolvedValue({
+			data: { type: 'file', content: 'bmFtZTogQ0k=' }
+		} as never);
+
+		const result = await buildDashboardData(octokit, 'owner', 'repo', { days: null });
+
 		expect(result.totalRuns).toBe(1);
+		expect(result.isAllTime).toBe(true);
+		expect(octokit.rest.actions.listWorkflowRunsForRepo).toHaveBeenCalledWith({
+			owner: 'owner',
+			repo: 'repo',
+			per_page: 100,
+			page: 1
+		});
+	});
+
+	it('does not fetch generated workflow paths as repository files', async () => {
+		const octokit = createOctokit('test-token');
+		vi.mocked(octokit.rest.actions.listRepoWorkflows).mockResolvedValue({
+			data: {
+				workflows: [
+					{
+						id: 1,
+						name: 'Copilot',
+						path: 'dynamic/agents/copilot-pull-request-reviewer',
+						state: 'active'
+					}
+				]
+			}
+		} as never);
+		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockResolvedValue({
+			data: { workflow_runs: [], total_count: 0 }
+		} as never);
+		vi.mocked(octokit.rest.repos.listCommits).mockResolvedValue({ data: [] } as never);
+
+		await buildDashboardData(octokit, 'owner', 'repo', { days: null });
+
+		expect(octokit.rest.repos.getContent).not.toHaveBeenCalled();
 	});
 
 	it('builds dashboard data from GitHub data', async () => {
@@ -503,6 +583,25 @@ describe('buildWorkflowDetailData', () => {
 		const result = await buildWorkflowDetailData(octokit, 'owner', 'repo', 123);
 		expect(result.workflowId).toBe(123);
 		expect(result.workflowName).toBe('CI');
+	});
+
+	it('limits workflow runs to the configured lookback period', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-07-11T12:00:00Z'));
+		const octokit = createOctokit('test-token');
+		vi.mocked(octokit.rest.actions.listRepoWorkflows).mockResolvedValue({
+			data: { workflows: [{ id: 123, name: 'CI', path: 'dynamic/ci.yml', state: 'active' }] }
+		} as never);
+		vi.mocked(octokit.rest.actions.listWorkflowRuns).mockResolvedValue({
+			data: { workflow_runs: [] }
+		} as never);
+
+		await buildWorkflowDetailData(octokit, 'owner', 'repo', 123, { days: 30 });
+
+		expect(octokit.rest.actions.listWorkflowRuns).toHaveBeenCalledWith(
+			expect.objectContaining({ created: '>=2026-06-11' })
+		);
+		vi.useRealTimers();
 	});
 
 	it('throws error when workflow not found', async () => {

@@ -30,7 +30,7 @@
 		: 'h-[100px] w-[220px] px-3 py-2.5'} text-xs"
 >
 	<div class="flex min-w-0 items-center justify-between gap-2">
-		<p class="min-w-0 truncate font-semibold text-card-foreground {compact ? 'text-xs' : 'text-[13px]'}" title={node.jobName}>
+		<p class="min-w-0 truncate font-semibold text-card-foreground {compact ? 'text-xs' : 'text-sm'}" title={node.jobName}>
 			{node.jobName}
 		</p>
 		{#if node.runnerLabel}
@@ -41,8 +41,8 @@
 			</span>
 		{/if}
 	</div>
-	<div class="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-		<i class="fa-regular fa-circle-check shrink-0 text-[0.6rem] text-primary"></i>
+	<div class="flex min-w-0 items-center gap-1.5 text-[10px] text-muted-foreground">
+		<i class="fa-regular fa-circle-check shrink-0 text-[10px] text-primary"></i>
 		<span class="truncate">{node.stepCount} steps</span>
 	</div>
 	<div class="flex min-w-0 items-center justify-between gap-1 text-[10px] text-muted-foreground">

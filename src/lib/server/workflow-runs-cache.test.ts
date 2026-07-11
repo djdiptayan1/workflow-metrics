@@ -8,6 +8,7 @@ import {
 	deleteExpiredWorkflowDetailRunsCache
 } from './workflow-runs-cache';
 import type { GitHubWorkflowRun } from '$lib/types/github';
+import type { DashboardData } from '$lib/types/metrics';
 
 // Create a proper mock builder for Supabase chains
 const createMockSupabaseClient = () => {
@@ -104,6 +105,7 @@ describe('getCachedWorkflowRuns', () => {
 	});
 
 	it('returns fresh cached data', async () => {
+		const dashboardData = { owner: 'owner', repo: 'repo', totalRuns: 1 } as DashboardData;
 		const mockSupabase = {
 			from: vi.fn().mockReturnValue({
 				select: vi.fn().mockReturnValue({
@@ -112,7 +114,11 @@ describe('getCachedWorkflowRuns', () => {
 							eq: vi.fn().mockReturnValue({
 								eq: vi.fn().mockReturnValue({
 									maybeSingle: vi.fn().mockResolvedValue({
-										data: { runs: mockRuns, fetched_at: new Date().toISOString() },
+										data: {
+											runs: mockRuns,
+											dashboard_data: dashboardData,
+											fetched_at: new Date().toISOString()
+										},
 										error: null
 									})
 								})
@@ -133,6 +139,7 @@ describe('getCachedWorkflowRuns', () => {
 
 		expect(result).not.toBeNull();
 		expect(result?.runs).toEqual(mockRuns);
+		expect(result?.dashboardData).toEqual(dashboardData);
 		expect(result?.isStale).toBe(false);
 	});
 
@@ -283,13 +290,7 @@ describe('getCachedWorkflowRuns', () => {
 			})
 		};
 
-		await getCachedWorkflowRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			'2024-01-01'
-		);
+		await getCachedWorkflowRuns(mockSupabase as never, 'user-123', 'owner', 'repo', '2024-01-01');
 
 		expect(mockSupabase.from).toHaveBeenCalledWith('workflow_runs_cache');
 	});
@@ -301,6 +302,7 @@ describe('setCachedWorkflowRuns', () => {
 	];
 
 	it('successfully stores workflow runs', async () => {
+		const dashboardData = { owner: 'owner', repo: 'repo', totalRuns: 1 } as DashboardData;
 		const mockSupabase = {
 			from: vi.fn().mockReturnValue({
 				upsert: vi.fn().mockReturnValue({
@@ -320,7 +322,8 @@ describe('setCachedWorkflowRuns', () => {
 			'owner',
 			'repo',
 			'2024-01-01',
-			mockRuns
+			mockRuns,
+			dashboardData
 		);
 
 		expect(result.ok).toBe(true);
@@ -330,7 +333,8 @@ describe('setCachedWorkflowRuns', () => {
 			owner: 'owner',
 			name: 'repo',
 			window_start: '2024-01-01',
-			runs: mockRuns
+			runs: mockRuns,
+			dashboard_data: dashboardData
 		});
 		expect(upsertCall[1]).toMatchObject({
 			onConflict: 'user_id,owner,name,window_start',

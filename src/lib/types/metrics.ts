@@ -131,6 +131,8 @@ export interface DashboardData {
 	dora?: DoraMetrics;
 	/** The number of days covered by this data (e.g. 7 or 30). */
 	timeWindowDays: number;
+	/** True when the dashboard imported all history available from GitHub. */
+	isAllTime: boolean;
 	/** Total raw minutes consumed by all completed runs in the window. */
 	totalMinutes30d: number;
 	/** Estimated billable minutes. Accurate when runner types are detected; otherwise raw minutes. */
@@ -197,6 +199,17 @@ export interface WorkflowDetailData {
 	jobGraphNodes: WorkflowJobNode[];
 	/** Directed edges between jobs based on `needs` dependencies. */
 	jobGraphEdges: WorkflowJobEdge[];
+	workflowContent: string | null;
+	latestFailure: WorkflowFailure | null;
+}
+
+export interface WorkflowFailure {
+	runId: number;
+	runNumber: number;
+	failedAt: string | null;
+	htmlUrl: string;
+	jobName: string | null;
+	stepName: string | null;
 }
 
 export interface WorkflowJobNode {

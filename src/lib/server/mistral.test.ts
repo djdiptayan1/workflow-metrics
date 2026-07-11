@@ -1,8 +1,14 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 // Mock the AI SDK before any imports
-vi.mock('@ai-sdk/mistral', () => ({
-	createMistral: vi.fn().mockReturnValue(
+vi.mock('@ai-sdk/openai', () => ({
+	createOpenAI: vi.fn().mockReturnValue(
+		vi.fn().mockImplementation((modelId: string) => ({ __model: true, __modelId: modelId }))
+	)
+}));
+
+vi.mock('@ai-sdk/google', () => ({
+	createGoogleGenerativeAI: vi.fn().mockReturnValue(
 		vi.fn().mockImplementation((modelId: string) => ({ __model: true, __modelId: modelId }))
 	)
 }));
@@ -15,15 +21,41 @@ vi.mock('ai', () => ({
 }));
 
 // Import after mocks
-import { createMistralClient, buildOptimizationPrompt, generateOptimizationReport, generateOptimizedYaml } from './mistral';
+import { createAIModel, fetchAvailableModels, buildOptimizationPrompt, generateOptimizationReport, generateOptimizedYaml } from './mistral';
 import { generateText } from 'ai';
 import type { WorkflowMetrics } from '$lib/types/metrics';
-import { resolvedAppConfig } from '$lib/server/config/app-config';
 
-describe('createMistralClient', () => {
-	it('creates a Mistral client with API key', () => {
-		const client = createMistralClient('test-api-key');
-		expect(client).toBeDefined();
+describe('createAIModel', () => {
+	it('creates models for both supported providers', () => {
+		expect(createAIModel('openai', 'test-api-key')).toEqual(
+			expect.objectContaining({ __modelId: 'gpt-4.1-mini' })
+		);
+		expect(createAIModel('gemini', 'test-api-key')).toEqual(
+			expect.objectContaining({ __modelId: 'gemini-2.5-flash' })
+		);
+	});
+});
+
+describe('fetchAvailableModels', () => {
+	it('returns only OpenAI text-generation model families', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => ({ data: [{ id: 'gpt-4.1-mini' }, { id: 'gpt-image-1' }, { id: 'text-embedding-3-small' }] })
+		}));
+		expect(await fetchAvailableModels('openai', 'key')).toEqual(['gpt-4.1-mini']);
+		vi.unstubAllGlobals();
+	});
+
+	it('returns only Gemini models that support content generation', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => ({ models: [
+				{ name: 'models/gemini-2.5-flash', supportedGenerationMethods: ['generateContent'] },
+				{ name: 'models/text-embedding-004', supportedGenerationMethods: ['embedContent'] }
+			] })
+		}));
+		expect(await fetchAvailableModels('gemini', 'key')).toEqual(['gemini-2.5-flash']);
+		vi.unstubAllGlobals();
 	});
 });
 
@@ -210,7 +242,7 @@ jobs:
 			})
 		);
 		expect(vi.mocked(generateText).mock.calls[0][0].model).toEqual(
-			expect.objectContaining({ __modelId: resolvedAppConfig.aiOptimization.defaultModel })
+			expect.objectContaining({ __modelId: 'gpt-4.1-mini' })
 		);
 	});
 });
@@ -325,7 +357,7 @@ jobs:
 			})
 		);
 		expect(vi.mocked(generateText).mock.calls[0][0].model).toEqual(
-			expect.objectContaining({ __modelId: resolvedAppConfig.aiOptimization.defaultModel })
+			expect.objectContaining({ __modelId: 'gpt-4.1-mini' })
 		);
 	});
 });

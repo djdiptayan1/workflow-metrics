@@ -12,10 +12,11 @@
 	import { keyWithIndex } from '$lib/components/dashboard/list-keys';
 
 	let { data }: { data: PageData } = $props();
-	let { detailData, owner, repo, hasMistralKey, aiModelLabel } = $derived(data);
+	let { detailData, owner, repo, hasAiKey, aiModelLabel, lookbackLabel, lookbackDescription } = $derived(data);
 	let metrics = $derived(detailData.metrics);
 
 	let showOptimize = $state(false);
+	let showWorkflowFile = $state(false);
 
 	// Estimated minutes "saved" by skips (median run duration × skipped count)
 	const medianDurationMs = $derived(
@@ -48,12 +49,12 @@
 			<h1 class="text-xl font-semibold text-foreground">{detailData.workflowName}</h1>
 			<p class="text-xs font-mono text-muted-foreground">{detailData.workflowPath}</p>
 			<p class="text-xs text-muted-foreground">
-				Last 30 days: <span class="font-medium text-foreground">{metrics.totalRuns.toLocaleString()}</span> triggered
+				{lookbackLabel}: <span class="font-medium text-foreground">{metrics.totalRuns.toLocaleString()}</span> triggered
 				· <span class="font-medium text-foreground">{(metrics.successCount + metrics.failureCount).toLocaleString()}</span> executed
 				· <span class="font-medium text-foreground">{metrics.skippedCount.toLocaleString()}</span> skipped
 			</p>
 		</div>
-		{#if hasMistralKey}
+		{#if hasAiKey}
 			<button
 				onclick={() => (showOptimize = !showOptimize)}
 				class="flex items-center gap-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg px-4 py-2 text-sm font-medium transition-colors"
@@ -65,7 +66,7 @@
 			<a
 				href="/settings"
 				class="flex items-center gap-2 border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 rounded-lg px-4 py-2 text-sm transition-colors"
-				title="Add Mistral API key in settings to enable AI optimization"
+				title="Add an OpenAI or Gemini API key in settings to enable AI optimization"
 			>
 				<i class="fa-solid fa-wand-magic-sparkles size-4 shrink-0" aria-hidden="true"></i>
 				Optimize with AI
@@ -73,8 +74,38 @@
 		{/if}
 	</div>
 
+	{#if detailData.latestFailure}
+		<section class="rounded-xl border border-destructive/40 bg-destructive/10 p-4" role="alert">
+			<div class="flex flex-wrap items-start justify-between gap-3">
+				<div>
+					<p class="text-sm font-semibold text-destructive">Latest workflow run failed</p>
+					<p class="mt-1 text-sm text-foreground">
+						Run #{detailData.latestFailure.runNumber}
+						{#if detailData.latestFailure.jobName} · {detailData.latestFailure.jobName}{/if}
+						{#if detailData.latestFailure.stepName} · {detailData.latestFailure.stepName}{/if}
+					</p>
+				</div>
+				<a href={detailData.latestFailure.htmlUrl} target="_blank" rel="noreferrer" class="rounded-md bg-destructive px-3 py-2 text-sm font-medium text-white hover:bg-destructive/90">
+					Investigate on GitHub
+				</a>
+			</div>
+		</section>
+	{/if}
+
+	{#if detailData.workflowContent}
+		<section class="rounded-xl border border-border bg-card">
+			<button type="button" class="flex w-full items-center justify-between px-5 py-4 text-left" onclick={() => (showWorkflowFile = !showWorkflowFile)} aria-expanded={showWorkflowFile}>
+				<span><span class="block text-sm font-semibold text-foreground">Workflow file</span><span class="mt-0.5 block text-xs text-muted-foreground">{detailData.workflowPath}</span></span>
+				<span class="text-sm font-medium text-primary">{showWorkflowFile ? 'Hide' : 'Preview'}</span>
+			</button>
+			{#if showWorkflowFile}
+				<pre class="max-h-96 overflow-auto border-t border-border bg-muted/30 p-4 text-xs leading-5 text-foreground"><code>{detailData.workflowContent}</code></pre>
+			{/if}
+		</section>
+	{/if}
+
 	<!-- AI Optimization Panel -->
-	{#if showOptimize && hasMistralKey}
+	{#if showOptimize && hasAiKey}
 		<OptimizePanel
 			workflowId={detailData.workflowId}
 			workflowName={detailData.workflowName}
@@ -96,7 +127,7 @@
 			subtitle={metrics.successCount + metrics.failureCount > 0
 				? `${metrics.successCount} of ${metrics.successCount + metrics.failureCount} runs that executed`
 				: metrics.totalRuns === 0
-					? 'no runs in last 30 days'
+					? 'no workflow runs found'
 					: `${metrics.successCount} of ${metrics.totalRuns} runs`}
 			valueClass={metrics.totalRuns === 0 ? 'text-muted-foreground' : successRateColor(metrics.successRate)}
 			help="Percentage of runs that actually executed (success or failure). Skipped and cancelled runs are excluded."
@@ -111,7 +142,7 @@
 			class="min-w-[140px] flex-1"
 			title="Total Runs"
 			value={metrics.totalRuns.toLocaleString()}
-			subtitle="last 30 days"
+			subtitle={lookbackDescription}
 		/>
 		<MetricCard
 			class="min-w-[140px] flex-1 {failureRateBorderColor(metrics.failureRate)}"
@@ -130,7 +161,7 @@
 			subtitle={`${formatMinutes(detailData.billableMinutes30d)} billable${
 				detailData.billableMinutes30d !== detailData.totalMinutes30d ? ' (mixed runners)' : ' (Linux ×1)'
 			}`}
-			help="Raw minutes consumed in the last 30 days. Billable minutes are estimated by applying the runner OS multiplier (Linux ×1, Windows ×2, macOS ×10) from the last 5 sampled runs."
+			help={`Raw minutes consumed across ${lookbackDescription}. Billable minutes are estimated by applying the runner OS multiplier (Linux ×1, Windows ×2, macOS ×10) from the last 5 sampled runs.`}
 			icon='<svg class="size-4 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>'
 		/>
 		<MetricCard
@@ -160,7 +191,7 @@
 			<div class="bg-card border border-border rounded-xl p-5 space-y-4">
 				<div>
 					<h3 class="text-sm font-semibold text-foreground">Cost Efficiency</h3>
-					<p class="text-xs text-muted-foreground mt-0.5">Where build time is going (last 30 days)</p>
+					<p class="text-xs text-muted-foreground mt-0.5">Where build time is going across {lookbackDescription}</p>
 				</div>
 				<div class="space-y-3">
 					<div class="flex items-center justify-between text-sm">

@@ -5,6 +5,18 @@ export function cn(...inputs: ClassValue[]) {
 	return twMerge(clsx(inputs));
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type WithoutChild<T> = T extends { child?: any } ? Omit<T, 'child'> : T;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type WithoutChildren<T> = T extends { children?: any } ? Omit<T, 'children'> : T;
+
+export type WithoutChildrenOrChild<T> = WithoutChildren<WithoutChild<T>>;
+
+export type WithElementRef<T, U extends HTMLElement = HTMLElement> = T & {
+	ref?: U | null;
+};
+
 export function formatDuration(ms: number | null | undefined): string {
 	if (ms == null || ms < 0) return '—';
 	if (ms < 1000) return `${ms}ms`;
@@ -68,11 +80,11 @@ export function successRateColor(rate: number): string {
 	return 'text-red-500';
 }
 
-/** Left border Tailwind class matching successRateColor thresholds. */
+/** Full-border Tailwind class matching successRateColor thresholds. */
 export function successRateBorderColor(rate: number): string {
-	if (rate >= 90) return 'border-l-4 border-l-green-500';
-	if (rate >= 70) return 'border-l-4 border-l-yellow-500';
-	return 'border-l-4 border-l-red-500';
+	if (rate >= 90) return 'border-green-500/40 bg-green-500/[0.03]';
+	if (rate >= 70) return 'border-yellow-500/40 bg-yellow-500/[0.03]';
+	return 'border-red-500/40 bg-red-500/[0.03]';
 }
 
 /** Tailwind class for failure rate: green ≤10%, yellow ≤30%, red above. */
@@ -82,11 +94,11 @@ export function failureRateColor(failureRate: number): string {
 	return 'text-red-500';
 }
 
-/** Left border Tailwind class matching failureRateColor thresholds. */
+/** Full-border Tailwind class matching failureRateColor thresholds. */
 export function failureRateBorderColor(failureRate: number): string {
-	if (failureRate <= 10) return 'border-l-4 border-l-green-500';
-	if (failureRate <= 30) return 'border-l-4 border-l-yellow-500';
-	return 'border-l-4 border-l-red-500';
+	if (failureRate <= 10) return 'border-green-500/40 bg-green-500/[0.03]';
+	if (failureRate <= 30) return 'border-yellow-500/40 bg-yellow-500/[0.03]';
+	return 'border-red-500/40 bg-red-500/[0.03]';
 }
 
 export function conclusionColor(conclusion: string | null | undefined): string {
@@ -119,10 +131,7 @@ export function conclusionBadgeVariant(
 	}
 }
 
-export function statusLabel(
-	status: string | null,
-	conclusion: string | null
-): string {
+export function statusLabel(status: string | null, conclusion: string | null): string {
 	if (status === 'in_progress') return 'Running';
 	if (status === 'queued') return 'Queued';
 	if (!conclusion) return status ?? '—';

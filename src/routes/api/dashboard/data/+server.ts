@@ -1,23 +1,16 @@
 import { error, json } from '@sveltejs/kit';
-import {
-	createOctokit,
-	buildDashboardData,
-	isGitHubUnauthorizedError
-} from '$lib/server/github';
+import { createOctokit, buildDashboardData, isGitHubUnauthorizedError } from '$lib/server/github';
 import { createSupabaseAdminClient } from '$lib/server/supabase';
-import {
-	getCachedWorkflowRuns,
-	setCachedWorkflowRuns
-} from '$lib/server/workflow-runs-cache';
+import { getCachedWorkflowRuns, setCachedWorkflowRuns } from '$lib/server/workflow-runs-cache';
 import type { RequestHandler } from './$types';
 
 /**
- * GET /api/dashboard/data?owner=...&repo=...&days=7
+ * GET /api/dashboard/data?owner=...&repo=...&days=all
  *
  * Returns dashboard data for the given repo. Supports:
  *
- * - ?days=7  (default: 30) — tiered loading: client fetches 7-day data first (fast),
- *   then requests 30-day data in the background.
+ * - ?days=all imports all available GitHub Actions history.
+ * - ?days=30 imports a bounded window, capped at 90 days.
  *
  * - Cache-hit (fresh):   returns JSON immediately.
  * - Cache-hit (stale):   returns stale JSON immediately with `X-Data-Stale: true` header,
@@ -35,7 +28,12 @@ export const GET: RequestHandler = async ({ url, locals, request, platform }) =>
 	if (!owner || !repo) throw error(400, 'Missing owner or repo');
 
 	const daysParam = url.searchParams.get('days');
-	const days = daysParam ? Math.min(Math.max(parseInt(daysParam, 10) || 30, 1), 90) : 30;
+	const days =
+		daysParam === 'all'
+			? null
+			: daysParam
+				? Math.min(Math.max(parseInt(daysParam, 10) || 30, 1), 90)
+				: 30;
 
 	const { data: connection } = await locals.supabase
 		.from('github_connections')
@@ -68,90 +66,137 @@ export const GET: RequestHandler = async ({ url, locals, request, platform }) =>
 
 		// If query succeeded (even if empty), set to empty array to show this is initialized
 		if (doraWorkflows !== null) {
-			doraWorkflowIds = doraWorkflows.length > 0 
-				? doraWorkflows.map((w) => w.workflow_id)
-				: [];
+			doraWorkflowIds = doraWorkflows.length > 0 ? doraWorkflows.map((w) => w.workflow_id) : [];
 		}
 	}
+	const { data: userSettings } = await locals.supabase
+		.from('user_settings')
+		.select('dashboard_refresh_interval')
+		.eq('user_id', user.id)
+		.single();
+	const refreshInterval = userSettings?.dashboard_refresh_interval ?? '5';
+	const freshnessMs = refreshInterval === 'realtime' ? 0 : Number(refreshInterval) * 60_000;
 
 	const windowStart = (() => {
+		if (days === null) return '1970-01-01';
 		const d = new Date();
 		d.setDate(d.getDate() - days);
 		return d.toISOString().slice(0, 10);
 	})();
 
-	const cachedResult = await getCachedWorkflowRuns(
-		locals.supabase,
-		user.id,
-		owner,
-		repo,
-		windowStart
-	);
+	const cachedResult =
+		refreshInterval === 'realtime'
+			? null
+			: await getCachedWorkflowRuns(
+					locals.supabase,
+					user.id,
+					owner,
+					repo,
+					windowStart,
+					freshnessMs
+				);
 
 	const octokit = createOctokit(connection.access_token);
+	const snapshotMatchesDoraSelection =
+		cachedResult?.dashboardData != null &&
+		[...(cachedResult.dashboardData.doraWorkflowIds ?? [])].sort().join(',') ===
+			[...(doraWorkflowIds ?? [])].sort().join(',');
+	const requestStart = performance.now();
+	const timing: string[] = [];
+	const onTiming = (label: string, ms: number) => {
+		timing.push(`${label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()};dur=${Math.round(ms)}`);
+	};
+	const timedJson = (data: unknown, cacheState: 'fresh' | 'stale' | 'miss') =>
+		json(data, {
+			headers: {
+				'X-Data-Cache': cacheState,
+				...(cacheState === 'stale' ? { 'X-Data-Stale': 'true' } : {}),
+				'Server-Timing': [
+					`dashboard;dur=${Math.round(performance.now() - requestStart)}`,
+					...timing
+				].join(', ')
+			}
+		});
 
 	// --- Cache hit (fresh) ---
+	if (
+		cachedResult &&
+		!cachedResult.isStale &&
+		cachedResult.dashboardData &&
+		snapshotMatchesDoraSelection
+	) {
+		return timedJson(cachedResult.dashboardData, 'fresh');
+	}
+
+	// Legacy raw-run cache entries are upgraded in-place on their next read.
 	if (cachedResult && !cachedResult.isStale) {
 		try {
 			const dashboardData = await buildDashboardData(octokit, owner, repo, {
 				cachedRuns: cachedResult.runs,
 				days,
-				doraWorkflowIds
+				doraWorkflowIds,
+				onTiming
 			});
-			return json(dashboardData);
+			const admin = createSupabaseAdminClient();
+			await setCachedWorkflowRuns(
+				admin ?? locals.supabase,
+				user.id,
+				owner,
+				repo,
+				windowStart,
+				cachedResult.runs,
+				dashboardData
+			);
+			return timedJson(dashboardData, 'fresh');
 		} catch (e: unknown) {
 			return handleGitHubError(e);
 		}
 	}
 
 	// --- Cache hit (stale): return stale data immediately, refresh in background ---
-	if (cachedResult && cachedResult.isStale) {
-		let staleResponseData: ReturnType<typeof json> | null = null;
-		try {
-			const staleData = await buildDashboardData(octokit, owner, repo, {
-				cachedRuns: cachedResult.runs,
-				days,
-				doraWorkflowIds
-			});
-			staleResponseData = json(staleData, {
-				headers: { 'X-Data-Stale': 'true' }
-			});
-		} catch (e: unknown) {
-			return handleGitHubError(e);
-		}
-
+	if (
+		cachedResult &&
+		cachedResult.isStale &&
+		cachedResult.dashboardData &&
+		snapshotMatchesDoraSelection
+	) {
 		// Fire background refresh — update the cache without blocking the response
 		const refreshTask = (async () => {
 			try {
 				const admin = createSupabaseAdminClient();
 				const supabaseForWrite = admin ?? locals.supabase;
-				await buildDashboardData(octokit, owner, repo, {
+				let refreshedRuns = cachedResult.runs;
+				const dashboardData = await buildDashboardData(octokit, owner, repo, {
 					days,
 					doraWorkflowIds,
 					onRunsFetched: async (runs) => {
-						await setCachedWorkflowRuns(
-							supabaseForWrite,
-							user.id,
-							owner,
-							repo,
-							windowStart,
-							runs
-						);
+						refreshedRuns = runs;
 					}
 				});
+				await setCachedWorkflowRuns(
+					supabaseForWrite,
+					user.id,
+					owner,
+					repo,
+					windowStart,
+					refreshedRuns,
+					dashboardData
+				);
 			} catch (e) {
 				console.warn('[api/dashboard/data] Background SWR refresh failed:', e);
 			}
 		})();
 
 		// On Cloudflare Workers, use waitUntil so the worker stays alive for the background task
-		const ctx = platform?.env ? (platform as { context?: { waitUntil?: (p: Promise<unknown>) => void } }).context : undefined;
+		const ctx = platform?.env
+			? (platform as { context?: { waitUntil?: (p: Promise<unknown>) => void } }).context
+			: undefined;
 		if (ctx?.waitUntil) {
 			ctx.waitUntil(refreshTask);
 		}
 		// In Node.js the promise runs fire-and-forget
 
-		return staleResponseData!;
+		return timedJson(cachedResult.dashboardData, 'stale');
 	}
 
 	// --- Cache miss ---
@@ -159,7 +204,16 @@ export const GET: RequestHandler = async ({ url, locals, request, platform }) =>
 	const acceptsSSE = request.headers.get('Accept') === 'text/event-stream';
 
 	if (acceptsSSE) {
-		return streamDashboardData(octokit, owner, repo, days, windowStart, user.id, locals, doraWorkflowIds);
+		return streamDashboardData(
+			octokit,
+			owner,
+			repo,
+			days,
+			windowStart,
+			user.id,
+			locals,
+			doraWorkflowIds
+		);
 	}
 
 	// Plain JSON fallback (no SSE support, or client didn't request it)
@@ -167,18 +221,25 @@ export const GET: RequestHandler = async ({ url, locals, request, platform }) =>
 		const admin = createSupabaseAdminClient();
 		const supabaseForWrite = admin ?? locals.supabase;
 
+		let fetchedRuns: import('$lib/types/github').GitHubWorkflowRun[] = [];
 		const dashboardData = await buildDashboardData(octokit, owner, repo, {
 			days,
 			doraWorkflowIds,
+			onTiming,
 			onRunsFetched: async (runs) => {
-				try {
-					await setCachedWorkflowRuns(supabaseForWrite, user.id, owner, repo, windowStart, runs);
-				} catch (e) {
-					console.error('[api/dashboard/data] Cache write error:', e);
-				}
+				fetchedRuns = runs;
 			}
 		});
-		return json(dashboardData);
+		await setCachedWorkflowRuns(
+			supabaseForWrite,
+			user.id,
+			owner,
+			repo,
+			windowStart,
+			fetchedRuns,
+			dashboardData
+		);
+		return timedJson(dashboardData, 'miss');
 	} catch (e: unknown) {
 		return handleGitHubError(e);
 	}
@@ -202,7 +263,7 @@ function streamDashboardData(
 	octokit: ReturnType<typeof createOctokit>,
 	owner: string,
 	repo: string,
-	days: number,
+	days: number | null,
 	windowStart: string,
 	userId: string,
 	locals: App.Locals,
@@ -220,6 +281,7 @@ function streamDashboardData(
 		try {
 			const admin = createSupabaseAdminClient();
 			const supabaseForWrite = admin ?? locals.supabase;
+			let fetchedRuns: import('$lib/types/github').GitHubWorkflowRun[] = [];
 
 			const dashboardData = await buildDashboardData(octokit, owner, repo, {
 				days,
@@ -232,13 +294,18 @@ function streamDashboardData(
 				},
 				onRunsFetched: async (runs) => {
 					write({ event: 'progress', data: { phase: 'computing' } });
-					try {
-						await setCachedWorkflowRuns(supabaseForWrite, userId, owner, repo, windowStart, runs);
-					} catch (e) {
-						console.error('[api/dashboard/data] Cache write error (SSE):', e);
-					}
+					fetchedRuns = runs;
 				}
 			});
+			await setCachedWorkflowRuns(
+				supabaseForWrite,
+				userId,
+				owner,
+				repo,
+				windowStart,
+				fetchedRuns,
+				dashboardData
+			);
 
 			write({ event: 'complete', data: dashboardData });
 		} catch (e: unknown) {

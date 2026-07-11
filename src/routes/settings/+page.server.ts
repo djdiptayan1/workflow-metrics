@@ -12,7 +12,7 @@ type GhInstallation = {
 /**
  * Full sync: fetch app installations from GitHub for the user's known accounts,
  * upsert into DB, and remove DB rows for installations no longer on GitHub.
- * Called on settings page load and by the Sync action.
+ * Called by the explicit Sync action after a user changes installations on GitHub.
  */
 async function syncInstallationsFromGitHub(
 	supabase: SupabaseClient,
@@ -91,9 +91,7 @@ async function syncInstallationsFromGitHub(
 		};
 	}
 
-	const matching = installations.filter((i) =>
-		knownLogins.has(i.account.login.toLowerCase())
-	);
+	const matching = installations.filter((i) => knownLogins.has(i.account.login.toLowerCase()));
 
 	const authHeaders = {
 		Authorization: `Bearer ${jwt}`,
@@ -148,7 +146,10 @@ async function syncInstallationsFromGitHub(
 			.from('github_app_installations')
 			.delete()
 			.eq('user_id', userId)
-			.in('installation_id', toRemove.map((r) => r.installation_id));
+			.in(
+				'installation_id',
+				toRemove.map((r) => r.installation_id)
+			);
 	}
 
 	return {
@@ -168,11 +169,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const privateKey = env.GITHUB_APP_PRIVATE_KEY;
 	const hasGitHubApp = !!(appId && privateKey && env.GITHUB_APP_SLUG);
 
-	// Auto-sync installations from GitHub on every load so the list reflects add/remove on GitHub
-	if (hasGitHubApp && appId && privateKey) {
-		await syncInstallationsFromGitHub(locals.supabase, user.id, appId, privateKey);
-	}
-
 	const [connectionsResult, settingsResult, reposResult, installationsResult] = await Promise.all([
 		locals.supabase
 			.from('github_connections')
@@ -180,7 +176,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			.eq('user_id', user.id),
 		locals.supabase
 			.from('user_settings')
-			.select('mistral_api_key, theme, default_repo_id')
+			.select(
+				'ai_provider, ai_api_key, ai_model, theme, default_repo_id, actions_lookback, dashboard_refresh_interval'
+			)
 			.eq('user_id', user.id)
 			.single(),
 		locals.supabase
@@ -190,7 +188,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			.order('full_name'),
 		locals.supabase
 			.from('github_app_installations')
-			.select('id, installation_id, account_login, account_type, account_avatar_url, account_name, created_at')
+			.select(
+				'id, installation_id, account_login, account_type, account_avatar_url, account_name, created_at'
+			)
 			.eq('user_id', user.id)
 			.order('account_login')
 	]);
@@ -212,16 +212,35 @@ export const actions: Actions = {
 		if (!user) return fail(401, { error: 'Unauthorized' });
 
 		const formData = await request.formData();
-		const mistralApiKey = formData.get('mistral_api_key') as string | null;
+		const aiApiKey = formData.get('ai_api_key') as string | null;
+		const aiProvider = formData.get('ai_provider') === 'gemini' ? 'gemini' : 'openai';
+		const aiModel =
+			String(formData.get('ai_model') ?? '')
+				.trim()
+				.slice(0, 200) || null;
 		const theme = formData.get('theme') as 'dark' | 'light' | 'system';
 		const defaultRepoId = formData.get('default_repo_id') as string | null;
+		const requestedLookback = formData.get('actions_lookback');
+		const actionsLookback = ['7', '30', '90', 'all'].includes(String(requestedLookback))
+			? (requestedLookback as '7' | '30' | '90' | 'all')
+			: '30';
+		const requestedRefreshInterval = formData.get('dashboard_refresh_interval');
+		const dashboardRefreshInterval = ['realtime', '5', '10', '15'].includes(
+			String(requestedRefreshInterval)
+		)
+			? (requestedRefreshInterval as 'realtime' | '5' | '10' | '15')
+			: '5';
 
 		const { error } = await locals.supabase.from('user_settings').upsert(
 			{
 				user_id: user.id,
-				mistral_api_key: mistralApiKey || null,
+				ai_provider: aiProvider,
+				ai_api_key: aiApiKey || null,
+				ai_model: aiModel,
 				theme: theme || 'dark',
 				default_repo_id: defaultRepoId || null,
+				actions_lookback: actionsLookback,
+				dashboard_refresh_interval: dashboardRefreshInterval,
 				updated_at: new Date().toISOString()
 			},
 			{ onConflict: 'user_id' }
@@ -234,7 +253,7 @@ export const actions: Actions = {
 
 	/**
 	 * Manual refresh: sync GitHub App installations from the GitHub API and
-	 * update the DB (add new, remove uninstalled). The list also syncs automatically on page load.
+	 * update the DB (add new, remove uninstalled).
 	 */
 	syncInstallations: async ({ locals }) => {
 		const { user } = await locals.safeGetSession();
@@ -246,12 +265,7 @@ export const actions: Actions = {
 			return fail(500, { syncError: 'GitHub App is not configured on this server.' });
 		}
 
-		const result = await syncInstallationsFromGitHub(
-			locals.supabase,
-			user.id,
-			appId,
-			privateKey
-		);
+		const result = await syncInstallationsFromGitHub(locals.supabase, user.id, appId, privateKey);
 
 		if (result.error) return fail(500, { syncError: result.error });
 

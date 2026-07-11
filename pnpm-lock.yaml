@@ -24,9 +24,12 @@ importers:
 
   .:
     dependencies:
-      '@ai-sdk/mistral':
-        specifier: 3.0.21
-        version: 3.0.21(zod@4.3.6)
+      '@ai-sdk/google':
+        specifier: ^3.0.91
+        version: 3.0.91(zod@4.3.6)
+      '@ai-sdk/openai':
+        specifier: ^3.0.84
+        version: 3.0.84(zod@4.3.6)
       '@fortawesome/fontawesome-free':
         specifier: 7.2.0
         version: 7.2.0
@@ -124,6 +127,9 @@ importers:
       tailwind-merge:
         specifier: 3.5.0
         version: 3.5.0
+      tailwind-variants:
+        specifier: ^3.2.2
+        version: 3.2.2(tailwind-merge@3.5.0)(tailwindcss@4.3.0)
       tailwindcss:
         specifier: 4.3.0
         version: 4.3.0
@@ -157,8 +163,14 @@ packages:
     peerDependencies:
       zod: 4.3.6
 
-  '@ai-sdk/mistral@3.0.21':
-    resolution: {integrity: sha512-GhLRyfXghnKpt51t8ELU3cXwbCUcGOxZFUQFUZvNBt+y298PlOhaAK6pQtihfpNRGUycrdNotKwVajJm0a6uwg==}
+  '@ai-sdk/google@3.0.91':
+    resolution: {integrity: sha512-d/ho+sDjArFjreE2002t9jE4LXX3wde97dN2HCLCX1l41gaJV3wf/c/19axjUNfIf/4uUq+nJmhBO0lW/dg3yw==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: 4.3.6
+
+  '@ai-sdk/openai@3.0.84':
+    resolution: {integrity: sha512-cmgbeJL0bbY0yTJH4/AdmP5E7MjWRL9G8UdhIi0JlV/So03o82ORJofW8OzwCZPTORVQblFbpZXYGDcUd9NdUQ==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: 4.3.6
@@ -168,6 +180,16 @@ packages:
     engines: {node: '>=18'}
     peerDependencies:
       zod: 4.3.6
+
+  '@ai-sdk/provider-utils@4.0.38':
+    resolution: {integrity: sha512-/HHGmtKllqjg1OLc023v9w9kK3laW7Z6TzfZukYQWCsGBbzB9p60zTvvpXFVcs44NZBVXL3viOa1HRKUbeee8g==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: 4.3.6
+
+  '@ai-sdk/provider@3.0.14':
+    resolution: {integrity: sha512-5X1k57JBJ4H7H1QjX7CnJYAB1I19r/trVZTMcSms7/kLNZ8RaU4Nt2agcwZzv82Hfx6Q7/TOLU7agAKeFfc8cA==}
+    engines: {node: '>=18'}
 
   '@ai-sdk/provider@3.0.8':
     resolution: {integrity: sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ==}
@@ -1684,6 +1706,10 @@ packages:
     resolution: {integrity: sha512-Vo1ab+QXPzZ4tCa8SwIHJFaSzy4R6SHf7BY79rFBDf0idraZWAkYrDjDj8uWaSm3S2TK+hJ7/t1CEmZ7jXw+pg==}
     engines: {node: '>=18.0.0'}
 
+  eventsource-parser@3.1.0:
+    resolution: {integrity: sha512-kJezFj9YFAMLeORyi7aCLxLbD5/qWMQnoMVlVPyHIll7lgRJCc3JVln9Vgl9nwQi0YkMnhdGTMNn7CkRRAptMg==}
+    engines: {node: '>=18.0.0'}
+
   expect-type@1.3.0:
     resolution: {integrity: sha512-knvyeauYhqjOYvQ66MznSMs83wmHrCycNEN6Ao+2AeYEfxUIkuiVxdEa1qlGEPK+We3n0THiDciYSsCcgW/DoA==}
     engines: {node: '>=12.0.0'}
@@ -2538,6 +2564,16 @@ packages:
   tailwind-merge@3.5.0:
     resolution: {integrity: sha512-I8K9wewnVDkL1NTGoqWmVEIlUcB9gFriAEkXkfCjX5ib8ezGxtR3xD7iZIxrfArjEsH7F1CHD4RFUtxefdqV/A==}
 
+  tailwind-variants@3.2.2:
+    resolution: {integrity: sha512-Mi4kHeMTLvKlM98XPnK+7HoBPmf4gygdFmqQPaDivc3DpYS6aIY6KiG/PgThrGvii5YZJqRsPz0aPyhoFzmZgg==}
+    engines: {node: '>=16.x', pnpm: '>=7.x'}
+    peerDependencies:
+      tailwind-merge: '>=3.0.0'
+      tailwindcss: '*'
+    peerDependenciesMeta:
+      tailwind-merge:
+        optional: true
+
   tailwindcss-animate@1.0.7:
     resolution: {integrity: sha512-bl6mpH3T7I3UFxuvDEXLxy/VuFxBk5bbzplh7tXI68mwMokNYd1t9qPBHlnyTwfa4JGC4zP516I1hYYtQ/vspA==}
     peerDependencies:
@@ -2814,10 +2850,16 @@ snapshots:
       '@vercel/oidc': 3.1.0
       zod: 4.3.6
 
-  '@ai-sdk/mistral@3.0.21(zod@4.3.6)':
+  '@ai-sdk/google@3.0.91(zod@4.3.6)':
     dependencies:
-      '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.16(zod@4.3.6)
+      '@ai-sdk/provider': 3.0.14
+      '@ai-sdk/provider-utils': 4.0.38(zod@4.3.6)
+      zod: 4.3.6
+
+  '@ai-sdk/openai@3.0.84(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.14
+      '@ai-sdk/provider-utils': 4.0.38(zod@4.3.6)
       zod: 4.3.6
 
   '@ai-sdk/provider-utils@4.0.16(zod@4.3.6)':
@@ -2826,6 +2868,17 @@ snapshots:
       '@standard-schema/spec': 1.1.0
       eventsource-parser: 3.0.6
       zod: 4.3.6
+
+  '@ai-sdk/provider-utils@4.0.38(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.14
+      '@standard-schema/spec': 1.1.0
+      eventsource-parser: 3.1.0
+      zod: 4.3.6
+
+  '@ai-sdk/provider@3.0.14':
+    dependencies:
+      json-schema: 0.4.0
 
   '@ai-sdk/provider@3.0.8':
     dependencies:
@@ -4236,6 +4289,8 @@ snapshots:
 
   eventsource-parser@3.0.6: {}
 
+  eventsource-parser@3.1.0: {}
+
   expect-type@1.3.0: {}
 
   fast-content-type-parse@3.0.0: {}
@@ -5018,6 +5073,12 @@ snapshots:
   tailwind-merge@2.6.1: {}
 
   tailwind-merge@3.5.0: {}
+
+  tailwind-variants@3.2.2(tailwind-merge@3.5.0)(tailwindcss@4.3.0):
+    dependencies:
+      tailwindcss: 4.3.0
+    optionalDependencies:
+      tailwind-merge: 3.5.0
 
   tailwindcss-animate@1.0.7(tailwindcss@4.3.0):
     dependencies:

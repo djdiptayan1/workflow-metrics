@@ -1,8 +1,9 @@
 import type { GitHubWorkflowRun } from '$lib/types/github';
+import type { DashboardData } from '$lib/types/metrics';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 /** How long a cache entry is considered fresh (we serve immediately, no refetch needed). */
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * How long a stale cache entry is still usable for stale-while-revalidate.
@@ -16,19 +17,20 @@ const CACHE_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 export interface WorkflowRunsCacheRow {
 	runs: unknown;
+	dashboard_data?: unknown;
 	fetched_at: string;
 }
 
 export interface CachedRunsResult {
 	runs: GitHubWorkflowRun[];
+	/** Present for entries created after dashboard snapshot caching was introduced. */
+	dashboardData: DashboardData | null;
 	/** True when data is older than CACHE_TTL_MS but within STALE_TTL_MS. */
 	isStale: boolean;
 }
 
 /** Deletes cache rows older than CACHE_RETENTION_MS. Call periodically (e.g. on cache read). */
-export async function deleteExpiredWorkflowRunsCache(
-	supabase: SupabaseClient
-): Promise<void> {
+export async function deleteExpiredWorkflowRunsCache(supabase: SupabaseClient): Promise<void> {
 	const cutoff = new Date(Date.now() - CACHE_RETENTION_MS).toISOString();
 	await supabase.from('workflow_runs_cache').delete().lt('fetched_at', cutoff);
 }
@@ -52,7 +54,8 @@ export async function getCachedWorkflowRuns(
 	userId: string,
 	owner: string,
 	repo: string,
-	windowStart: string
+	windowStart: string,
+	freshnessMs = CACHE_TTL_MS
 ): Promise<CachedRunsResult | null> {
 	// Fire-and-forget cleanup of expired rows (limited retention)
 	deleteExpiredWorkflowRunsCache(supabase).catch((err) =>
@@ -61,7 +64,7 @@ export async function getCachedWorkflowRuns(
 
 	const { data, error } = await supabase
 		.from('workflow_runs_cache')
-		.select('runs, fetched_at')
+		.select('runs, dashboard_data, fetched_at')
 		.eq('user_id', userId)
 		.eq('owner', owner)
 		.eq('name', repo)
@@ -87,7 +90,12 @@ export async function getCachedWorkflowRuns(
 	const runs = Array.isArray(row.runs) ? (row.runs as GitHubWorkflowRun[]) : null;
 	if (!runs) return null;
 
-	return { runs, isStale: ageMs > CACHE_TTL_MS };
+	const dashboardData =
+		row.dashboard_data && typeof row.dashboard_data === 'object'
+			? (row.dashboard_data as DashboardData)
+			: null;
+
+	return { runs, dashboardData, isStale: ageMs > freshnessMs };
 }
 
 /** Stores workflow runs in the cache for the given repo and window. */
@@ -97,7 +105,8 @@ export async function setCachedWorkflowRuns(
 	owner: string,
 	repo: string,
 	windowStart: string,
-	runs: GitHubWorkflowRun[]
+	runs: GitHubWorkflowRun[],
+	dashboardData?: DashboardData
 ): Promise<{ ok: boolean; error?: string }> {
 	const row = {
 		user_id: userId,
@@ -105,6 +114,7 @@ export async function setCachedWorkflowRuns(
 		name: repo,
 		window_start: windowStart,
 		runs: runs as unknown as Record<string, unknown>[],
+		dashboard_data: dashboardData ?? null,
 		fetched_at: new Date().toISOString()
 	};
 	const { data, error } = await supabase
@@ -144,7 +154,8 @@ export async function getCachedWorkflowDetailRuns(
 	owner: string,
 	repo: string,
 	workflowId: number,
-	windowStart: string
+	windowStart: string,
+	freshnessMs = CACHE_TTL_MS
 ): Promise<CachedRunsResult | null> {
 	deleteExpiredWorkflowDetailRunsCache(supabase).catch((err) =>
 		console.warn('Workflow detail runs cache cleanup failed:', err)
@@ -178,7 +189,7 @@ export async function getCachedWorkflowDetailRuns(
 	const runs = Array.isArray(row.runs) ? (row.runs as GitHubWorkflowRun[]) : null;
 	if (!runs) return null;
 
-	return { runs, isStale: ageMs > CACHE_TTL_MS };
+	return { runs, dashboardData: null, isStale: ageMs > freshnessMs };
 }
 
 /** Stores workflow detail runs (single workflow) in the cache. */

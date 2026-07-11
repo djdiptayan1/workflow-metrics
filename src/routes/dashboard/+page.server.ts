@@ -10,11 +10,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const { user } = await locals.safeGetSession();
 	if (!user) throw redirect(303, '/auth/login');
 
-	const [
-		{ data: connection },
-		{ data: repos },
-		{ data: settings }
-	] = await Promise.all([
+	const [{ data: connection }, { data: repos }, { data: settings }] = await Promise.all([
 		locals.supabase
 			.from('github_connections')
 			.select('access_token, github_username')
@@ -28,12 +24,17 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			.order('full_name'),
 		locals.supabase
 			.from('user_settings')
-			.select('default_repo_id')
+			.select('default_repo_id, actions_lookback')
 			.eq('user_id', user.id)
 			.single()
 	]);
 
-	if (!connection) throw redirect(303, '/auth/login?error=' + encodeURIComponent('GitHub connection not found. Please sign in again.'));
+	if (!connection)
+		throw redirect(
+			303,
+			'/auth/login?error=' +
+				encodeURIComponent('GitHub connection not found. Please sign in again.')
+		);
 
 	if (!repos || repos.length === 0) throw redirect(303, '/onboarding');
 
@@ -53,6 +54,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	return {
 		repos,
 		selectedRepo,
-		githubUsername: connection.github_username
+		githubUsername: connection.github_username,
+		actionsLookback: settings?.actions_lookback ?? '30'
 	};
 };

@@ -3,7 +3,15 @@
 	import { SvelteMap } from 'svelte/reactivity';
 	import { keyWithIndex } from './list-keys';
 
-	let { data, commits = [] }: { data: RunDataPoint[]; commits?: WorkflowFileCommit[] } = $props();
+	let {
+		data,
+		commits = [],
+		windowLabel = 'Last 30 days'
+	}: {
+		data: RunDataPoint[];
+		commits?: WorkflowFileCommit[];
+		windowLabel?: string;
+	} = $props();
 
 	// Hover state: index into data for tooltip
 	let hoveredIndex = $state<number | null>(null);
@@ -30,9 +38,7 @@
 		data.map((d, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(d.failure)}`).join(' ')
 	);
 	const skippedPath = $derived(
-		data
-			.map((d, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(d.failure + d.skipped)}`)
-			.join(' ')
+		data.map((d, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(d.failure + d.skipped)}`).join(' ')
 	);
 	const successPath = $derived(
 		data
@@ -94,7 +100,7 @@
 		hoveredIndex != null && commitMarkers.length
 			? (() => {
 					const hoveredDate = data[hoveredIndex]?.date;
-					return hoveredDate ? commitMarkers.find((m) => m.date === hoveredDate) ?? null : null;
+					return hoveredDate ? (commitMarkers.find((m) => m.date === hoveredDate) ?? null) : null;
 				})()
 			: null
 	);
@@ -106,7 +112,10 @@
 		const viewX = (e.clientX - rect.left) / rect.width;
 		const viewBoxX = viewX * width;
 		const dataIndex = Math.round(
-			Math.max(0, Math.min(data.length - 1, ((viewBoxX - padding.left) / chartWidth) * (data.length - 1)))
+			Math.max(
+				0,
+				Math.min(data.length - 1, ((viewBoxX - padding.left) / chartWidth) * (data.length - 1))
+			)
 		);
 		hoveredIndex = dataIndex;
 	}
@@ -123,25 +132,31 @@
 			year: 'numeric'
 		});
 	}
+
+	function tooltipTransform(index: number) {
+		if (index <= 1) return 'translate(0, calc(-100% - 8px))';
+		if (index >= data.length - 2) return 'translate(-100%, calc(-100% - 8px))';
+		return 'translate(-50%, calc(-100% - 8px))';
+	}
 </script>
 
-<div class="bg-card border border-border rounded-xl p-5 space-y-4">
+<div class="bg-card border-border space-y-4 rounded-xl border p-5">
 	<div class="flex items-center justify-between">
-		<h3 class="text-sm font-semibold text-foreground">Run History (30 days)</h3>
-		<div class="flex items-center gap-4 text-xs text-muted-foreground">
+		<h3 class="text-foreground text-sm font-semibold">Run History · {windowLabel}</h3>
+		<div class="text-muted-foreground flex items-center gap-4 text-xs">
 			<span class="flex items-center gap-1.5">
-				<span class="size-2 rounded-full bg-success inline-block"></span> Success
+				<span class="bg-success inline-block size-2 rounded-full"></span> Success
 			</span>
 			<span class="flex items-center gap-1.5">
-				<span class="size-2 rounded-full bg-destructive inline-block"></span> Failure
+				<span class="bg-destructive inline-block size-2 rounded-full"></span> Failure
 			</span>
 			<span class="flex items-center gap-1.5">
-				<span class="size-2 rounded-full bg-muted-foreground inline-block"></span> Skipped
+				<span class="bg-muted-foreground inline-block size-2 rounded-full"></span> Skipped
 			</span>
 			{#if commits.length > 0}
 				<span class="flex items-center gap-1.5" title="Commits that changed .github/workflows">
 					<span
-						class="inline-block w-3 h-0.5 rounded-full bg-[var(--color-chart-2)] shadow-[0_0_6px_var(--color-chart-2)]"
+						class="inline-block h-0.5 w-3 rounded-full bg-[var(--color-chart-2)] shadow-[0_0_6px_var(--color-chart-2)]"
 					></span> Workflow changes
 				</span>
 			{/if}
@@ -149,8 +164,8 @@
 	</div>
 
 	{#if data.every((d) => d.total === 0)}
-		<div class="flex items-center justify-center h-32 text-muted-foreground text-sm">
-			No runs in the last 30 days
+		<div class="text-muted-foreground flex h-32 items-center justify-center text-sm">
+			No workflow runs found
 		</div>
 	{:else}
 		<div
@@ -161,7 +176,7 @@
 			role="img"
 			aria-label="Run history chart. Hover over the chart to see daily counts."
 		>
-			<svg viewBox="0 0 {width} {height}" class="w-full block" preserveAspectRatio="none">
+			<svg viewBox="0 0 {width} {height}" class="block w-full" preserveAspectRatio="none">
 				<defs>
 					<linearGradient id="run-history-success" x1="0" x2="0" y1="0" y2="1">
 						<stop offset="0%" stop-color="var(--color-success)" stop-opacity="0.4" />
@@ -178,40 +193,29 @@
 				</defs>
 				<!-- Grid lines -->
 				{#each [0, 0.25, 0.5, 0.75, 1] as pct (pct)}
-				<line
-					x1={padding.left}
-					y1={padding.top + chartHeight * (1 - pct)}
-					x2={width - padding.right}
-					y2={padding.top + chartHeight * (1 - pct)}
-					stroke="currentColor"
-					class="text-border"
-					stroke-width="0.5"
-					stroke-dasharray="4 4"
-				/>
+					<line
+						x1={padding.left}
+						y1={padding.top + chartHeight * (1 - pct)}
+						x2={width - padding.right}
+						y2={padding.top + chartHeight * (1 - pct)}
+						stroke="currentColor"
+						class="text-border"
+						stroke-width="0.5"
+						stroke-dasharray="4 4"
+					/>
 				{/each}
 
-			<!-- Stacked areas: failure (bottom), skipped band, success band (top) -->
-			<path
-				d="{failurePath} L {x(data.length - 1)} {y(0)} L {x(0)} {y(0)} Z"
-				fill="url(#run-history-failure)"
-			/>
-			<path
-				d="{skippedPath} {failurePathReversed} Z"
-				fill="url(#run-history-skipped)"
-			/>
-			<path
-				d="{successPath} {skippedPathReversed} Z"
-				fill="url(#run-history-success)"
-			/>
-			<!-- Lines drawn in stacking order; success last so it renders on top -->
-			<path d={failurePath} fill="none" stroke="var(--color-destructive)" stroke-width="2" />
-			<path
-				d={skippedPath}
-				fill="none"
-				stroke="hsl(var(--muted-foreground))"
-				stroke-width="2"
-			/>
-			<path d={successPath} fill="none" stroke="var(--color-success)" stroke-width="2" />
+				<!-- Stacked areas: failure (bottom), skipped band, success band (top) -->
+				<path
+					d="{failurePath} L {x(data.length - 1)} {y(0)} L {x(0)} {y(0)} Z"
+					fill="url(#run-history-failure)"
+				/>
+				<path d="{skippedPath} {failurePathReversed} Z" fill="url(#run-history-skipped)" />
+				<path d="{successPath} {skippedPathReversed} Z" fill="url(#run-history-success)" />
+				<!-- Lines drawn in stacking order; success last so it renders on top -->
+				<path d={failurePath} fill="none" stroke="var(--color-destructive)" stroke-width="2" />
+				<path d={skippedPath} fill="none" stroke="hsl(var(--muted-foreground))" stroke-width="2" />
+				<path d={successPath} fill="none" stroke="var(--color-success)" stroke-width="2" />
 
 				<!-- Commit markers (workflow file changes): dashed vertical line so it’s clearly visible -->
 				{#each commitMarkers as marker (marker.date)}
@@ -242,60 +246,60 @@
 					/>
 				{/if}
 
-			<!-- X-axis labels -->
-			{#each xLabels as label (label.date)}
-				<text
-					x={label.x}
-					y={height - 4}
-					text-anchor="middle"
-					font-size="9"
-					class="fill-muted-foreground"
-				>
-					{label.date}
-				</text>
-			{/each}
+				<!-- X-axis labels -->
+				{#each xLabels as label (label.date)}
+					<text
+						x={label.x}
+						y={height - 4}
+						text-anchor="middle"
+						font-size="9"
+						class="fill-muted-foreground"
+					>
+						{label.date}
+					</text>
+				{/each}
 			</svg>
 
 			<!-- Tooltip (horizontal position matches SVG viewBox so it stays aligned) -->
 			{#if hoveredPoint && chartRef}
 				<div
-					class="pointer-events-none absolute left-0 top-0 z-10 rounded-lg border border-border bg-card px-3 py-2 text-xs shadow-lg"
+					class="border-border bg-card pointer-events-none absolute top-0 left-0 z-10 rounded-lg border px-3 py-2 text-xs shadow-lg"
 					style="
 						left: {(hoveredX / width) * 100}%;
-						transform: translate(-50%, calc(-100% - 8px));
+						transform: {tooltipTransform(hoveredIndex ?? 0)};
 					"
 				>
-					<div class="font-medium text-foreground">{formatDate(hoveredPoint.date)}</div>
-					<div class="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted-foreground">
+					<div class="text-foreground font-medium">{formatDate(hoveredPoint.date)}</div>
+					<div class="text-muted-foreground mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5">
 						<span class="flex items-center gap-1.5">
-							<span class="size-2 rounded-full bg-success"></span>
+							<span class="bg-success size-2 rounded-full"></span>
 							Success: {hoveredPoint.success}
 						</span>
 						<span class="flex items-center gap-1.5">
-							<span class="size-2 rounded-full bg-destructive"></span>
+							<span class="bg-destructive size-2 rounded-full"></span>
 							Failure: {hoveredPoint.failure}
 						</span>
 						{#if hoveredPoint.skipped > 0}
 							<span class="flex items-center gap-1.5">
-								<span class="size-2 rounded-full bg-muted-foreground"></span>
+								<span class="bg-muted-foreground size-2 rounded-full"></span>
 								Skipped: {hoveredPoint.skipped}
 							</span>
 						{/if}
 						{#if hoveredPoint.cancelled > 0}
 							<span class="col-span-2 flex items-center gap-1.5">
-								<span class="size-2 rounded-full bg-muted-foreground"></span>
+								<span class="bg-muted-foreground size-2 rounded-full"></span>
 								Cancelled: {hoveredPoint.cancelled}
 							</span>
 						{/if}
-						<span class="col-span-2 border-t border-border pt-1 mt-0.5 font-medium text-foreground">
+						<span class="border-border text-foreground col-span-2 mt-0.5 border-t pt-1 font-medium">
 							Total: {hoveredPoint.total} run{hoveredPoint.total !== 1 ? 's' : ''}
 						</span>
 						{#if hoveredMarker}
-							<div class="col-span-2 border-t border-border pt-1 mt-0.5 space-y-1">
+							<div class="border-border col-span-2 mt-0.5 space-y-1 border-t pt-1">
 								<span class="text-primary font-medium">Workflow file changes</span>
 								{#each hoveredMarker.commits as commit, i (keyWithIndex('commit', commit.sha, i))}
 									<div class="text-muted-foreground">
-										<span class="font-mono text-foreground">{commit.sha}</span>
+										<span class="text-foreground font-mono">{commit.sha}</span>
 										{commit.message ? ` — ${commit.message}` : ''}
 									</div>
 								{/each}

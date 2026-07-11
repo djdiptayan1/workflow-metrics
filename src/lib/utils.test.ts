@@ -181,19 +181,19 @@ describe('successRateColor', () => {
 });
 
 describe('successRateBorderColor', () => {
-	it('returns green border for 90% and above', () => {
-		expect(successRateBorderColor(90)).toBe('border-l-4 border-l-green-500');
-		expect(successRateBorderColor(100)).toBe('border-l-4 border-l-green-500');
+	it('returns green treatment for 90% and above', () => {
+		expect(successRateBorderColor(90)).toBe('border-green-500/40 bg-green-500/[0.03]');
+		expect(successRateBorderColor(100)).toBe('border-green-500/40 bg-green-500/[0.03]');
 	});
 
-	it('returns yellow border for 70-89%', () => {
-		expect(successRateBorderColor(70)).toBe('border-l-4 border-l-yellow-500');
-		expect(successRateBorderColor(85)).toBe('border-l-4 border-l-yellow-500');
+	it('returns yellow treatment for 70-89%', () => {
+		expect(successRateBorderColor(70)).toBe('border-yellow-500/40 bg-yellow-500/[0.03]');
+		expect(successRateBorderColor(85)).toBe('border-yellow-500/40 bg-yellow-500/[0.03]');
 	});
 
-	it('returns red border for below 70%', () => {
-		expect(successRateBorderColor(69)).toBe('border-l-4 border-l-red-500');
-		expect(successRateBorderColor(0)).toBe('border-l-4 border-l-red-500');
+	it('returns red treatment for below 70%', () => {
+		expect(successRateBorderColor(69)).toBe('border-red-500/40 bg-red-500/[0.03]');
+		expect(successRateBorderColor(0)).toBe('border-red-500/40 bg-red-500/[0.03]');
 	});
 });
 
@@ -218,19 +218,19 @@ describe('failureRateColor', () => {
 });
 
 describe('failureRateBorderColor', () => {
-	it('returns green border for 10% or below', () => {
-		expect(failureRateBorderColor(10)).toBe('border-l-4 border-l-green-500');
-		expect(failureRateBorderColor(0)).toBe('border-l-4 border-l-green-500');
+	it('returns green treatment for 10% or below', () => {
+		expect(failureRateBorderColor(10)).toBe('border-green-500/40 bg-green-500/[0.03]');
+		expect(failureRateBorderColor(0)).toBe('border-green-500/40 bg-green-500/[0.03]');
 	});
 
-	it('returns yellow border for 11-30%', () => {
-		expect(failureRateBorderColor(15)).toBe('border-l-4 border-l-yellow-500');
-		expect(failureRateBorderColor(30)).toBe('border-l-4 border-l-yellow-500');
+	it('returns yellow treatment for 11-30%', () => {
+		expect(failureRateBorderColor(15)).toBe('border-yellow-500/40 bg-yellow-500/[0.03]');
+		expect(failureRateBorderColor(30)).toBe('border-yellow-500/40 bg-yellow-500/[0.03]');
 	});
 
-	it('returns red border for above 30%', () => {
-		expect(failureRateBorderColor(31)).toBe('border-l-4 border-l-red-500');
-		expect(failureRateBorderColor(100)).toBe('border-l-4 border-l-red-500');
+	it('returns red treatment for above 30%', () => {
+		expect(failureRateBorderColor(31)).toBe('border-red-500/40 bg-red-500/[0.03]');
+		expect(failureRateBorderColor(100)).toBe('border-red-500/40 bg-red-500/[0.03]');
 	});
 });
 

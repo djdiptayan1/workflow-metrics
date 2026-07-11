@@ -715,7 +715,7 @@
 	:global(.opt-code-block code) {
 		background: transparent;
 		padding: 0;
-		font-size: 0.8125rem;
+		font-size: 12px;
 		line-height: 1.5;
 		color: #d4d4d4;
 	}

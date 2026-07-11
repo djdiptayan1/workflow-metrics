@@ -1,5 +1,5 @@
 import { error } from '@sveltejs/kit';
-import { generateOptimizationReport } from '$lib/server/mistral';
+import { generateOptimizationReport, AI_PROVIDER_LABELS, type AIProvider } from '$lib/server/mistral';
 import { Octokit } from '@octokit/rest';
 import type { RequestHandler } from './$types';
 import type { WorkflowMetrics } from '$lib/types/metrics';
@@ -17,7 +17,7 @@ function encodeSse(ev: SseEvent): string {
  * POST /api/optimize
  *
  * Streams progress events via SSE so the UI can show meaningful step messages
- * while Mistral AI generates the optimization report.
+ * while the selected AI provider generates the optimization report.
  *
  * Events:
  *   phase   — { step, message } — a server-side phase started
@@ -86,12 +86,12 @@ export const POST: RequestHandler = async ({ request, url, locals }) => {
 			// Validate settings
 			const { data: settings } = await supabase
 				.from('user_settings')
-				.select('mistral_api_key')
+				.select('ai_provider, ai_api_key, ai_model')
 				.eq('user_id', user.id)
 				.single();
 
-			if (!settings?.mistral_api_key) {
-				send({ event: 'error', data: { message: 'Mistral API key not configured. Add it in Settings.' } });
+			if (!settings?.ai_api_key) {
+				send({ event: 'error', data: { message: 'AI API key not configured. Add it in Settings.' } });
 				return;
 			}
 
@@ -127,13 +127,16 @@ export const POST: RequestHandler = async ({ request, url, locals }) => {
 
 			// ── Phase 3: AI analysis ──────────────────────────────────────────────
 			// The client will cycle through category-specific messages during this phase.
-			send({ event: 'phase', data: { step: 'ai-analyzing', message: 'Analyzing your workflow with Mistral AI…' } });
+			const provider = (settings.ai_provider ?? 'openai') as AIProvider;
+			send({ event: 'phase', data: { step: 'ai-analyzing', message: `Analyzing your workflow with ${AI_PROVIDER_LABELS[provider]}…` } });
 
 			const { result, usage } = await generateOptimizationReport(
-				settings.mistral_api_key,
+				settings.ai_api_key,
 				workflowName,
 				workflowYaml,
-				metrics
+				metrics,
+				provider,
+				settings.ai_model
 			);
 
 			// ── Phase 4: Save ─────────────────────────────────────────────────────

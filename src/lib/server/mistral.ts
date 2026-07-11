@@ -1,11 +1,57 @@
-import { createMistral } from '@ai-sdk/mistral';
+import { createOpenAI } from '@ai-sdk/openai';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { generateText, Output } from 'ai';
 import { z } from 'zod';
 import type { WorkflowMetrics, OptimizationResult, OptimizationItem } from '$lib/types/metrics';
-import { getAiOptimizationModel } from '$lib/server/config/app-config';
 
-export function createMistralClient(apiKey: string) {
-	return createMistral({ apiKey });
+export type AIProvider = 'openai' | 'gemini';
+
+const PROVIDER_MODELS: Record<AIProvider, string> = {
+	openai: 'gpt-4.1-mini',
+	gemini: 'gemini-2.5-flash'
+};
+
+export const AI_PROVIDER_LABELS: Record<AIProvider, string> = {
+	openai: 'OpenAI',
+	gemini: 'Google Gemini'
+};
+
+export function createAIModel(provider: AIProvider, apiKey: string, model?: string | null) {
+	return provider === 'gemini'
+		? createGoogleGenerativeAI({ apiKey })(model || PROVIDER_MODELS.gemini)
+		: createOpenAI({ apiKey })(model || PROVIDER_MODELS.openai);
+}
+
+export async function fetchAvailableModels(provider: AIProvider, apiKey: string): Promise<string[]> {
+	const response = await fetch(
+		provider === 'gemini'
+			? `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=${encodeURIComponent(apiKey)}`
+			: 'https://api.openai.com/v1/models',
+		provider === 'openai' ? { headers: { Authorization: `Bearer ${apiKey}` } } : undefined
+	);
+
+	if (!response.ok) {
+		throw new Error(response.status === 401 || response.status === 403
+			? 'The API key was rejected by the selected provider.'
+			: `The provider returned an error (${response.status}).`);
+	}
+
+	if (provider === 'gemini') {
+		const data = (await response.json()) as {
+			models?: Array<{ name: string; supportedGenerationMethods?: string[] }>;
+		};
+		return (data.models ?? [])
+			.filter((model) => model.supportedGenerationMethods?.includes('generateContent'))
+			.map((model) => model.name.replace(/^models\//, ''))
+			.sort();
+	}
+
+	const data = (await response.json()) as { data?: Array<{ id: string }> };
+	// ponytail: OpenAI's list endpoint has no capability field; expand this filter if new text families appear.
+	return (data.data ?? [])
+		.map((model) => model.id)
+		.filter((id) => /^(gpt-|o\d)/.test(id) && !/(audio|image|realtime|transcribe|tts)/.test(id))
+		.sort();
 }
 
 const OptimizationItemSchema = z.object({
@@ -86,14 +132,14 @@ export async function generateOptimizationReport(
 	apiKey: string,
 	workflowName: string,
 	workflowYaml: string,
-	metrics: WorkflowMetrics
+	metrics: WorkflowMetrics,
+	provider: AIProvider = 'openai',
+	model?: string | null
 ): Promise<{ result: OptimizationResult; usage: { promptTokens: number; completionTokens: number } }> {
-	const mistral = createMistralClient(apiKey);
-	const modelId = getAiOptimizationModel();
 	const prompt = buildOptimizationPrompt(workflowName, workflowYaml, metrics);
 
 	const { output, usage } = await generateText({
-		model: mistral(modelId),
+		model: createAIModel(provider, apiKey, model),
 		output: Output.object({ schema: OptimizationSchema }),
 		prompt,
 		maxOutputTokens: 4096
@@ -112,11 +158,10 @@ export async function generateOptimizedYaml(
 	apiKey: string,
 	workflowName: string,
 	originalYaml: string,
-	selectedOptimizations: OptimizationItem[]
+	selectedOptimizations: OptimizationItem[],
+	provider: AIProvider = 'openai',
+	model?: string | null
 ): Promise<string> {
-	const mistral = createMistralClient(apiKey);
-	const modelId = getAiOptimizationModel();
-
 	const optimizationDescriptions = selectedOptimizations
 		.map((opt, i) => `${i + 1}. **${opt.title}** (${opt.category}): ${opt.explanation}${opt.codeExample ? `\n\nExample:\n\`\`\`yaml\n${opt.codeExample}\n\`\`\`` : ''}`)
 		.join('\n\n');
@@ -139,7 +184,7 @@ ${optimizationDescriptions}
 Return ONLY the complete, updated YAML file with all optimizations applied. Do not include any explanation, markdown fences, or extra text — just the raw YAML content starting with the first line of the workflow file.`;
 
 	const { text } = await generateText({
-		model: mistral(modelId),
+		model: createAIModel(provider, apiKey, model),
 		prompt,
 		maxOutputTokens: 4096
 	});

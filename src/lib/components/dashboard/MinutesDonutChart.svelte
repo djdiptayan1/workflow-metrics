@@ -74,27 +74,39 @@
 
 	// Count how many workflow segments have confirmed runner detection
 	const detectedCount = $derived(segments.filter((s) => s.runnerDetected === true).length);
-	const workflowSegmentCount = $derived(segments.filter((s) => s.runnerDetected !== undefined).length);
+	const workflowSegmentCount = $derived(
+		segments.filter((s) => s.runnerDetected !== undefined).length
+	);
 
 	function runnerLabel(rt: RunnerType, detected: boolean): string {
 		if (!detected) return '~linux ×1';
 		switch (rt) {
-			case 'ubuntu': return 'linux ×1';
-			case 'windows': return 'win ×2';
-			case 'macos': return 'macos ×10';
-			case 'mixed': return 'mixed';
-			default: return '~linux ×1';
+			case 'ubuntu':
+				return 'linux ×1';
+			case 'windows':
+				return 'win ×2';
+			case 'macos':
+				return 'macos ×10';
+			case 'mixed':
+				return 'mixed';
+			default:
+				return '~linux ×1';
 		}
 	}
 
 	function runnerBadgeClass(rt: RunnerType, detected: boolean): string {
 		if (!detected) return 'bg-sky-100/50 text-sky-600/70 dark:bg-sky-900/20 dark:text-sky-400/60';
 		switch (rt) {
-			case 'ubuntu': return 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300';
-			case 'windows': return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300';
-			case 'macos': return 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300';
-			case 'mixed': return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300';
-			default: return 'bg-sky-100/50 text-sky-600/70 dark:bg-sky-900/20 dark:text-sky-400/60';
+			case 'ubuntu':
+				return 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300';
+			case 'windows':
+				return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300';
+			case 'macos':
+				return 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300';
+			case 'mixed':
+				return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300';
+			default:
+				return 'bg-sky-100/50 text-sky-600/70 dark:bg-sky-900/20 dark:text-sky-400/60';
 		}
 	}
 
@@ -102,18 +114,17 @@
 		totalBillableMinutes !== undefined && totalBillableMinutes !== totalMinutes
 	);
 
-	// A palette of distinct, theme-friendly colours
+	// Single-hue indigo ramp — segments are distinguished by lightness, not hue,
+	// keeping the donut on-brand with the rest of the restrained palette.
 	const COLORS = [
-		'#3b82f6', // blue
-		'#22c55e', // green
-		'#f59e0b', // amber
-		'#a855f7', // purple
-		'#ef4444', // red
-		'#06b6d4', // cyan
-		'#ec4899', // pink
-		'#14b8a6', // teal
-		'#f97316', // orange
-		'#84cc16'  // lime
+		'#332CAA',
+		'#4F46E5',
+		'#6C64EA',
+		'#8985EF',
+		'#A6A3F3',
+		'#C3C1F8',
+		'#DDDBFB',
+		'#EDECFD'
 	];
 
 	// SVG donut parameters
@@ -202,16 +213,16 @@
 	const activeSegment = $derived(hoveredIndex !== null ? donutSegments[hoveredIndex] : null);
 </script>
 
-<div class="bg-card border border-border rounded-xl p-5 space-y-4">
+<div class="bg-card border-border space-y-4 rounded-xl border p-5">
 	<div>
-		<h3 class="text-sm font-semibold text-foreground">{title}</h3>
+		<h3 class="text-foreground text-sm font-semibold">{title}</h3>
 		{#if subtitle}
-			<p class="text-xs text-muted-foreground mt-0.5">{subtitle}</p>
+			<p class="text-muted-foreground mt-0.5 text-xs">{subtitle}</p>
 		{/if}
 	</div>
 
 	{#if segments.length === 0 || totalMinutes === 0}
-		<div class="flex items-center justify-center h-40 text-muted-foreground text-sm">
+		<div class="text-muted-foreground flex h-40 items-center justify-center text-sm">
 			No data available
 		</div>
 	{:else}
@@ -252,138 +263,155 @@
 							stroke-dashoffset={seg.dashOffset}
 							stroke-linecap="butt"
 							transform="rotate(-90, {CX}, {CY})"
-							style="transition: stroke-width 0.15s ease; cursor: pointer;"
+							style="cursor: pointer;"
 							onmouseenter={(e) => onSegmentEnter(i, e)}
 						/>
 					{/each}
-				<!-- Center label — show billable if it differs from raw -->
-				{#if showBillable && totalBillableMinutes !== undefined}
-					<text
-						x={CX}
-						y={CY - 16}
-						text-anchor="middle"
-						dominant-baseline="middle"
-						class="fill-foreground"
-						style="font-size: 12px; font-weight: 600;"
-					>
-						{billableIsEstimate ? '~' : ''}{formatMinutes(totalBillableMinutes)}
-					</text>
-					<text
-						x={CX}
-						y={CY - 3}
-						text-anchor="middle"
-						dominant-baseline="middle"
-						class="fill-muted-foreground"
-						style="font-size: 9px;"
-					>
-						billable
-					</text>
-					<text
-						x={CX}
-						y={CY + 10}
-						text-anchor="middle"
-						dominant-baseline="middle"
-						class="fill-muted-foreground"
-						style="font-size: 9px;"
-					>
-						{formatMinutes(totalMinutes)} raw
-					</text>
-				{:else}
-					<text
-						x={CX}
-						y={CY - 8}
-						text-anchor="middle"
-						dominant-baseline="middle"
-						class="fill-foreground"
-						style="font-size: 14px; font-weight: 600;"
-					>
-						{formatMinutes(totalMinutes)}
-					</text>
-					<text
-						x={CX}
-						y={CY + 10}
-						text-anchor="middle"
-						dominant-baseline="middle"
-						class="fill-muted-foreground"
-						style="font-size: 9px;"
-					>
-						{totalLabel}
-					</text>
-				{/if}
+					<!-- Center label — show billable if it differs from raw -->
+					{#if showBillable && totalBillableMinutes !== undefined}
+						<text
+							x={CX}
+							y={CY - 16}
+							text-anchor="middle"
+							dominant-baseline="middle"
+							class="fill-foreground"
+							style="font-size: 12px; font-weight: 600;"
+						>
+							{billableIsEstimate ? '~' : ''}{formatMinutes(totalBillableMinutes)}
+						</text>
+						<text
+							x={CX}
+							y={CY - 3}
+							text-anchor="middle"
+							dominant-baseline="middle"
+							class="fill-muted-foreground"
+							style="font-size: 10px;"
+						>
+							billable
+						</text>
+						<text
+							x={CX}
+							y={CY + 10}
+							text-anchor="middle"
+							dominant-baseline="middle"
+							class="fill-muted-foreground"
+							style="font-size: 10px;"
+						>
+							{formatMinutes(totalMinutes)} raw
+						</text>
+					{:else}
+						<text
+							x={CX}
+							y={CY - 8}
+							text-anchor="middle"
+							dominant-baseline="middle"
+							class="fill-foreground"
+							style="font-size: 14px; font-weight: 600;"
+						>
+							{formatMinutes(totalMinutes)}
+						</text>
+						<text
+							x={CX}
+							y={CY + 10}
+							text-anchor="middle"
+							dominant-baseline="middle"
+							class="fill-muted-foreground"
+							style="font-size: 10px;"
+						>
+							{totalLabel}
+						</text>
+					{/if}
 				</svg>
 
-		<!-- Tooltip -->
-		{#if activeSegment}
-			{@const tooltipEstimated = activeSegment.runnerDetected !== undefined ? !activeSegment.runnerDetected : billableIsEstimate}
-			<div
-				class="pointer-events-none absolute z-10 rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md"
-				style="left: {tooltipX}px; top: {tooltipY}px; max-width: 180px;"
-			>
-				<p class="font-medium truncate">{activeSegment.name}</p>
-				{#if activeSegment.runnerType !== undefined}
-					<p class="text-muted-foreground">{runnerLabel(activeSegment.runnerType, activeSegment.runnerDetected ?? false)}</p>
-				{/if}
-				<p class="text-muted-foreground">{formatMinutes(activeSegment.minutes)} raw · {activeSegment.percentage}%</p>
-				{#if activeSegment.billableMinutes !== activeSegment.minutes}
-					<p class="text-muted-foreground">{tooltipEstimated ? '~' : ''}{formatMinutes(activeSegment.billableMinutes)} billable</p>
-				{/if}
-			</div>
-		{/if}
-			</div>
-
-	<!-- Legend -->
-	<div class="flex-1 min-w-0 space-y-2.5 py-1">
-			{#each donutSegments.slice(0, 8) as seg (seg.key)}
-			{@const isEstimated = seg.runnerDetected !== undefined ? !seg.runnerDetected : billableIsEstimate}
-			<div class="flex items-start gap-2 text-xs min-w-0">
-				<span
-					class="size-2.5 rounded-full flex-shrink-0 mt-0.5"
-					style="background-color: {seg.color};"
-				></span>
-				<div class="min-w-0 flex-1">
-					<div class="flex items-center gap-1.5 min-w-0">
-						<p class="truncate text-foreground font-medium leading-tight" title={seg.name}>{seg.name}</p>
-					{#if seg.runnerType !== undefined}
-						<span
-							class="shrink-0 inline-flex items-center rounded px-1 py-0.5 text-[9px] font-medium leading-none {runnerBadgeClass(seg.runnerType, seg.runnerDetected ?? false)}"
-						>
-							{runnerLabel(seg.runnerType, seg.runnerDetected ?? false)}
-						</span>
-					{/if}
-					</div>
-					<p class="text-muted-foreground tabular-nums leading-tight">
-						{formatMinutes(seg.minutes)} raw
-						{#if seg.billableMinutes !== seg.minutes}
-							· {isEstimated ? '~' : ''}{formatMinutes(seg.billableMinutes)} billable
+				<!-- Tooltip -->
+				{#if activeSegment}
+					{@const tooltipEstimated =
+						activeSegment.runnerDetected !== undefined
+							? !activeSegment.runnerDetected
+							: billableIsEstimate}
+					<div
+						class="border-border bg-popover text-popover-foreground pointer-events-none absolute z-10 rounded-md border px-2.5 py-1.5 text-xs shadow-md"
+						style="left: {tooltipX}px; top: {tooltipY}px; max-width: 180px;"
+					>
+						<p class="truncate font-medium">{activeSegment.name}</p>
+						{#if activeSegment.runnerType !== undefined}
+							<p class="text-muted-foreground">
+								{runnerLabel(activeSegment.runnerType, activeSegment.runnerDetected ?? false)}
+							</p>
 						{/if}
-					</p>
-				</div>
-				<span class="text-muted-foreground flex-shrink-0 tabular-nums text-[10px]">
-					{seg.percentage}%
-				</span>
+						<p class="text-muted-foreground">
+							{formatMinutes(activeSegment.minutes)} raw · {activeSegment.percentage}%
+						</p>
+						{#if activeSegment.billableMinutes !== activeSegment.minutes}
+							<p class="text-muted-foreground">
+								{tooltipEstimated ? '~' : ''}{formatMinutes(activeSegment.billableMinutes)} billable
+							</p>
+						{/if}
+					</div>
+				{/if}
 			</div>
-		{/each}
-		{#if donutSegments.length > 8}
-			<p class="text-xs text-muted-foreground pl-4">+{donutSegments.length - 8} more</p>
-		{/if}
-	</div>
-</div>
 
-<!-- Billing note -->
-<p class="text-xs text-muted-foreground border-t border-border pt-3">
-	{#if workflowSegmentCount > 0}
-		{#if detectedCount === workflowSegmentCount}
-			Runner types detected from workflow files (Linux ×1 · Windows ×2 · macOS ×10).
-		{:else if detectedCount === 0}
-			Could not detect runner types — billable estimated as Linux ×1. Click a workflow for job-level data.
-		{:else}
-			Runner detected for {detectedCount}/{workflowSegmentCount} workflows. Remaining marked ~ (assumed Linux ×1).
-		{/if}
-	{:else if billableIsEstimate}
-		Billable computed from runner labels on sampled jobs (Linux ×1, Windows ×2, macOS ×10).
-	{:else}
-		Billable minutes computed from runner labels (Linux ×1, Windows ×2, macOS ×10).
-	{/if}
-</p>
+			<!-- Legend -->
+			<div class="min-w-0 flex-1 space-y-2.5 py-1">
+				{#each donutSegments.slice(0, 8) as seg (seg.key)}
+					{@const isEstimated =
+						seg.runnerDetected !== undefined ? !seg.runnerDetected : billableIsEstimate}
+					<div class="flex min-w-0 items-start gap-2 text-xs">
+						<span
+							class="mt-0.5 size-2.5 flex-shrink-0 rounded-full"
+							style="background-color: {seg.color};"
+						></span>
+						<div class="min-w-0 flex-1">
+							<div class="flex min-w-0 items-center gap-1.5">
+								<p class="text-foreground truncate leading-tight font-medium" title={seg.name}>
+									{seg.name}
+								</p>
+								{#if seg.runnerType !== undefined}
+									<span
+										class="inline-flex shrink-0 items-center rounded px-1 py-0.5 text-[10px] leading-none font-medium {runnerBadgeClass(
+											seg.runnerType,
+											seg.runnerDetected ?? false
+										)}"
+									>
+										{runnerLabel(seg.runnerType, seg.runnerDetected ?? false)}
+									</span>
+								{/if}
+							</div>
+							<p class="text-muted-foreground leading-tight tabular-nums">
+								{formatMinutes(seg.minutes)} raw
+								{#if seg.billableMinutes !== seg.minutes}
+									· {isEstimated ? '~' : ''}{formatMinutes(seg.billableMinutes)} billable
+								{/if}
+							</p>
+						</div>
+						<span class="text-muted-foreground flex-shrink-0 text-[10px] tabular-nums">
+							{seg.percentage}%
+						</span>
+					</div>
+				{/each}
+				{#if donutSegments.length > 8}
+					<p class="text-muted-foreground pl-4 text-xs">+{donutSegments.length - 8} more</p>
+				{/if}
+			</div>
+		</div>
+
+		<!-- Billing note -->
+		<p class="text-muted-foreground border-border border-t pt-3 text-xs">
+			{#if workflowSegmentCount > 0}
+				{#if detectedCount === workflowSegmentCount}
+					Runner types detected from workflow files (Linux ×1 · Windows ×2 · macOS ×10).
+				{:else if detectedCount === 0}
+					Could not detect runner types — billable estimated as Linux ×1. Click a workflow for
+					job-level data.
+				{:else}
+					Runner detected for {detectedCount}/{workflowSegmentCount} workflows. Remaining marked ~ (assumed
+					Linux ×1).
+				{/if}
+			{:else if billableIsEstimate}
+				Billable computed from runner labels on sampled jobs (Linux ×1, Windows ×2, macOS ×10).
+			{:else}
+				Billable minutes computed from runner labels (Linux ×1, Windows ×2, macOS ×10).
+			{/if}
+		</p>
 	{/if}
 </div>
