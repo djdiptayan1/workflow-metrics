@@ -70,6 +70,26 @@ Figma template: [Dark Admin Dashboards](https://www.figma.com/community/file/132
 
 ## Getting Started
 
+### Run locally with Docker
+
+1. Copy `.env.example` to `.env` and add the three Supabase values from your project:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Start the app:
+
+   ```bash
+   docker compose up --build
+   ```
+
+3. Open http://localhost:5173.
+
+The database migrations in `supabase/migrations/` must be applied to the connected Supabase project
+before signing in. Configure GitHub OAuth with `http://localhost:5173/auth/callback` as its local
+redirect URL.
+
 ### Prerequisites
 
 - Node.js >= 24
