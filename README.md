@@ -16,7 +16,7 @@ An open-source dashboard for GitHub Actions metrics with AI-powered optimization
 ## Features
 
 - **GitHub OAuth login** — Sign in with GitHub using `repo` and `read:org` scopes to access your workflows
-- **Repository overview dashboard** — Total runs, success rate, average duration, active workflows, and 7→30 day progressive loading
+- **Repository overview dashboard** — Total runs, success rate, average duration, build minutes, skip rate, and DORA metrics across a selectable Actions history window
 - **DORA metrics** — Deployment Frequency, Lead Time for Changes, Change Failure Rate, and Mean Time to Recovery over the last 30 days
 - **Run history + workflow-change markers** — Visual breakdown of success/failure/cancelled runs plus commit markers when workflow files changed
 - **Duration by workflow** — Bar chart comparing average duration across all workflows
@@ -24,14 +24,19 @@ An open-source dashboard for GitHub Actions metrics with AI-powered optimization
 - **Minutes analytics** — Minutes by workflow, daily build-minutes trend, per-workflow minutes by job, and daily workflow minutes trend
 - **Efficiency insights** — Wasted minutes on failures, most expensive workflow, costliest branch, and frequency × duration table
 - **Skip analytics** — Global skip rate, per-workflow skip rate, and top skipped workflows table
-- **Recent runs table** — Filterable list of the latest runs with status, branch, actor, and duration
-- **Workflow list** — All workflows with live success rate and quick navigation
+- **Recent runs table** — Paginated history of every imported run with status, branch, actor, duration, and direct in-app investigation links
+- **Workflow inventory** — Search every workflow, pin important ones, classify production/development workflows, see total run counts, and surface the latest failure prominently
 - **Workflow detail dashboard** — Deep dive into a single workflow: P50/P95 duration, build minutes, billable minutes, skip rate, and cost efficiency
 - **Workflow structure flow chart** — Interactive workflow graph (trigger + job dependency DAG) with runner labels and step counts
 - **Job + step breakdowns** — Per-job timing analysis (avg/min/max) and slowest-job step-level breakdown from recent completed runs
-- **AI optimization with Mistral** — Click "Optimize with AI" on any workflow to get streaming, actionable suggestions (caching, parallelization, runner optimization, cost, etc.)
+- **Run failure investigation** — Open any run inside the app to inspect failed jobs and steps, copy the full GitHub log, and generate an AI explanation with commit/PR attribution and suggested next actions
+- **Workflow file preview** — Inspect workflow YAML from the workflow detail page without leaving the dashboard
+- **Pull request workspace** — Browse open, closed, and merged PRs; search by PR number or title; view changed LOC and the latest status of each associated GitHub Action
+- **AI optimization and failure analysis** — Use configured OpenAI or Gemini models for streaming workflow suggestions and evidence-based failure explanations
 - **Apply as PR** — Push AI optimization suggestions directly as a pull request via the GitHub App integration
-- **Settings page** — Manage GitHub connections, tracked repositories, Mistral API key, and theme
+- **Shared workflow preferences** — Repository admins can make workflow pins and environment labels shared; personal preferences remain user-specific by default
+- **Settings page** — Manage GitHub connections, tracked repositories, AI provider/model, Actions history, dashboard refresh policy, shared preferences, and theme
+- **Performance-aware caching** — Derived dashboard snapshots are cached with a user-selectable realtime, 5-, 10-, or 15-minute refresh policy; stale snapshots refresh in the background
 - **Dark / light mode** — Dark by default, persisted per user preference
 
 ## Workflow Flow Chart
@@ -59,7 +64,7 @@ flowchart LR
 - **Styling**: TailwindCSS 4 + `@tailwindcss/vite`
 - **Auth & Database**: Supabase (GitHub OAuth + PostgreSQL)
 - **GitHub API**: `@octokit/rest`
-- **AI**: Vercel AI SDK + `@ai-sdk/mistral` (streaming)
+- **AI**: Vercel AI SDK + OpenAI and Google Generative AI providers (streaming)
 - **Deployment**: Cloudflare Pages via `@sveltejs/adapter-cloudflare`
 - **Package manager**: PNPM
 
@@ -113,7 +118,7 @@ pnpm install
      supabase db push
      ```
      Your project ref is in the Supabase dashboard URL: `https://supabase.com/dashboard/project/YOUR_PROJECT_REF`.
-   - **Without CLI:** In **Supabase Dashboard → SQL Editor**, run each file in `supabase/migrations/` in numerical order, from `001_initial.sql` through `008_github_app_installations_avatar_name.sql`.
+   - **Without CLI:** In **Supabase Dashboard → SQL Editor**, run every file in `supabase/migrations/` in numeric order through `017_dashboard_refresh_interval.sql`.
 3. **Enable GitHub OAuth** (use a GitHub OAuth App, not a GitHub App):
    - Go to [GitHub → Settings → Developer settings → OAuth Apps → New OAuth App](https://github.com/settings/applications/new).
    - Set **Authorization callback URL** to your Supabase callback: `https://<your-project-ref>.supabase.co/auth/v1/callback`.
@@ -154,16 +159,14 @@ The "Apply as PR" feature — which pushes AI optimization suggestions directly 
      ```
    - Use the output as `GITHUB_APP_PRIVATE_KEY`.
 
-### 4. Get a Mistral AI API key (for AI optimization)
+### 4. Configure an AI provider (optional)
 
-The "Optimize with AI" feature streams actionable suggestions (caching, parallelization, runner optimization, cost reduction) powered by Mistral AI. The key is **per-user** and entered in the app Settings page — it is not a server environment variable.
+AI optimization and failure analysis use a per-user OpenAI or Gemini API key configured in the app Settings page. The key is not a server environment variable.
 
-1. Sign up or log in at [console.mistral.ai](https://console.mistral.ai).
-2. Go to **API Keys** → **Create new key**.
-3. Copy the key — you will not be able to see it again.
-4. After logging into the app, go to **Settings** and paste the key into the **Mistral API key** field.
+1. Create an API key with your selected provider: [OpenAI](https://platform.openai.com/api-keys) or [Google AI Studio](https://aistudio.google.com/app/apikey).
+2. After logging into the app, open **Settings**, choose the provider/model, and paste the key.
 
-The key is stored encrypted in Supabase and is only used server-side. AI optimization is simply unavailable without one — the rest of the app works normally.
+The key is stored encrypted in Supabase and is only used server-side. AI features are unavailable without one; the rest of the app works normally.
 
 ### 5. Configure environment variables
 
@@ -279,11 +282,14 @@ Tables:
 
 - `github_connections` — GitHub OAuth tokens per user
 - `repositories` — Tracked repositories per user
-- `user_settings` — Mistral API key (encrypted), theme, default repo
-- `workflow_runs_cache` — Cached workflow run data to reduce GitHub API calls
+- `user_settings` — Encrypted AI key/provider/model, theme, Actions history, dashboard refresh policy, and default repo
+- `workflow_runs_cache` — Raw runs plus derived dashboard snapshots for cache-first navigation
 - `workflow_detail_runs_cache` — Cached per-workflow run details
 - `optimization_history` — History of AI optimization suggestions per workflow
 - `github_app_installations` — GitHub App installation records per repository
+- `dora_workflows` — User-selected workflows used for DORA calculations
+- `repository_workflow_settings` — Per-repository personal/shared workflow preference mode
+- `workflow_preferences` — Pinned workflow and environment classification preferences
 
 ## Related Projects
 
