@@ -213,7 +213,11 @@ export const actions: Actions = {
 
 		const formData = await request.formData();
 		const aiApiKey = formData.get('ai_api_key') as string | null;
-		const aiProvider = formData.get('ai_provider') === 'gemini' ? 'gemini' : 'openai';
+		const requestedProvider = formData.get('ai_provider');
+		const aiProvider =
+			requestedProvider === 'gemini' || requestedProvider === 'mistral'
+				? requestedProvider
+				: 'openai';
 		const aiModel =
 			String(formData.get('ai_model') ?? '')
 				.trim()

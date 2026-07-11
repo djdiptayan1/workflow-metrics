@@ -72,7 +72,7 @@ export interface Database {
 					id: string;
 					user_id: string;
 					mistral_api_key: string | null;
-					ai_provider: 'openai' | 'gemini';
+					ai_provider: 'openai' | 'gemini' | 'mistral';
 					ai_api_key: string | null;
 					ai_model: string | null;
 					theme: 'dark' | 'light' | 'system';
@@ -86,7 +86,7 @@ export interface Database {
 					id?: string;
 					user_id: string;
 					mistral_api_key?: string | null;
-					ai_provider?: 'openai' | 'gemini';
+					ai_provider?: 'openai' | 'gemini' | 'mistral';
 					ai_api_key?: string | null;
 					ai_model?: string | null;
 					theme?: 'dark' | 'light' | 'system';
@@ -98,7 +98,7 @@ export interface Database {
 				};
 				Update: {
 					mistral_api_key?: string | null;
-					ai_provider?: 'openai' | 'gemini';
+					ai_provider?: 'openai' | 'gemini' | 'mistral';
 					ai_api_key?: string | null;
 					ai_model?: string | null;
 					theme?: 'dark' | 'light' | 'system';

@@ -13,6 +13,12 @@ vi.mock('@ai-sdk/google', () => ({
 	)
 }));
 
+vi.mock('@ai-sdk/mistral', () => ({
+	createMistral: vi.fn().mockReturnValue(
+		vi.fn().mockImplementation((modelId: string) => ({ __model: true, __modelId: modelId }))
+	)
+}));
+
 vi.mock('ai', () => ({
 	Output: {
 		object: vi.fn().mockReturnValue({ __output: true })
@@ -26,12 +32,15 @@ import { generateText } from 'ai';
 import type { WorkflowMetrics } from '$lib/types/metrics';
 
 describe('createAIModel', () => {
-	it('creates models for both supported providers', () => {
+	it('creates models for every supported provider', () => {
 		expect(createAIModel('openai', 'test-api-key')).toEqual(
 			expect.objectContaining({ __modelId: 'gpt-4.1-mini' })
 		);
 		expect(createAIModel('gemini', 'test-api-key')).toEqual(
 			expect.objectContaining({ __modelId: 'gemini-2.5-flash' })
+		);
+		expect(createAIModel('mistral', 'test-api-key')).toEqual(
+			expect.objectContaining({ __modelId: 'mistral-small-latest' })
 		);
 	});
 });
@@ -55,6 +64,18 @@ describe('fetchAvailableModels', () => {
 			] })
 		}));
 		expect(await fetchAvailableModels('gemini', 'key')).toEqual(['gemini-2.5-flash']);
+		vi.unstubAllGlobals();
+	});
+
+	it('returns Mistral chat-capable models', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => ({ data: [
+				{ id: 'mistral-small-latest', capabilities: { completion_chat: true } },
+				{ id: 'mistral-embed', capabilities: { completion_chat: false } }
+			] })
+		}));
+		expect(await fetchAvailableModels('mistral', 'key')).toEqual(['mistral-small-latest']);
 		vi.unstubAllGlobals();
 	});
 });

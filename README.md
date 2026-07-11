@@ -32,7 +32,7 @@ An open-source dashboard for GitHub Actions metrics with AI-powered optimization
 - **Run failure investigation** — Open any run inside the app to inspect failed jobs and steps, copy the full GitHub log, and generate an AI explanation with commit/PR attribution and suggested next actions
 - **Workflow file preview** — Inspect workflow YAML from the workflow detail page without leaving the dashboard
 - **Pull request workspace** — Browse open, closed, and merged PRs; search by PR number or title; view changed LOC and the latest status of each associated GitHub Action
-- **AI optimization and failure analysis** — Use configured OpenAI or Gemini models for streaming workflow suggestions and evidence-based failure explanations
+- **AI optimization and failure analysis** — Use configured OpenAI, Google Gemini, or Mistral models for streaming workflow suggestions and evidence-based failure explanations
 - **Apply as PR** — Push AI optimization suggestions directly as a pull request via the GitHub App integration
 - **Shared workflow preferences** — Repository admins can make workflow pins and environment labels shared; personal preferences remain user-specific by default
 - **Settings page** — Manage GitHub connections, tracked repositories, AI provider/model, Actions history, dashboard refresh policy, shared preferences, and theme
@@ -64,7 +64,7 @@ flowchart LR
 - **Styling**: TailwindCSS 4 + `@tailwindcss/vite`
 - **Auth & Database**: Supabase (GitHub OAuth + PostgreSQL)
 - **GitHub API**: `@octokit/rest`
-- **AI**: Vercel AI SDK + OpenAI and Google Generative AI providers (streaming)
+- **AI**: Vercel AI SDK + OpenAI, Google Generative AI, and Mistral providers (streaming)
 - **Deployment**: Cloudflare Pages via `@sveltejs/adapter-cloudflare`
 - **Package manager**: PNPM
 
@@ -161,9 +161,9 @@ The "Apply as PR" feature — which pushes AI optimization suggestions directly 
 
 ### 4. Configure an AI provider (optional)
 
-AI optimization and failure analysis use a per-user OpenAI or Gemini API key configured in the app Settings page. The key is not a server environment variable.
+AI optimization and failure analysis use a per-user OpenAI, Gemini, or Mistral API key configured in the app Settings page. The key is not a server environment variable.
 
-1. Create an API key with your selected provider: [OpenAI](https://platform.openai.com/api-keys) or [Google AI Studio](https://aistudio.google.com/app/apikey).
+1. Create an API key with your selected provider: [OpenAI](https://platform.openai.com/api-keys), [Google AI Studio](https://aistudio.google.com/app/apikey), or [Mistral AI](https://console.mistral.ai/api-keys).
 2. After logging into the app, open **Settings**, choose the provider/model, and paste the key.
 
 The key is stored encrypted in Supabase and is only used server-side. AI features are unavailable without one; the rest of the app works normally.

@@ -9,7 +9,7 @@
 	let savingSettings = $state(false);
 	let savingAiSettings = $state(false);
 	let syncing = $state(false);
-	let aiProvider = $state<'openai' | 'gemini'>('openai');
+	let aiProvider = $state<'openai' | 'gemini' | 'mistral'>('openai');
 	let aiApiKey = $state('');
 	let aiModel = $state('');
 	let aiModels = $state<string[]>([]);
@@ -505,6 +505,7 @@
 				>
 					<option value="openai">OpenAI</option>
 					<option value="gemini">Google Gemini</option>
+					<option value="mistral">Mistral AI</option>
 				</select>
 			</div>
 			<div class="space-y-2">

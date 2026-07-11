@@ -5,7 +5,7 @@ import {
 	isGitHubUnauthorizedError
 } from '$lib/server/github';
 import { createSupabaseAdminClient } from '$lib/server/supabase';
-import { AI_PROVIDER_LABELS, type AIProvider } from '$lib/server/mistral';
+import { AI_PROVIDER_LABELS, AI_PROVIDER_MODELS, type AIProvider } from '$lib/server/mistral';
 import {
 	getCachedWorkflowDetailRuns,
 	setCachedWorkflowDetailRuns
@@ -78,7 +78,7 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 
 	try {
 		const provider = (settings?.ai_provider ?? 'openai') as AIProvider;
-		const aiModelLabel = `${AI_PROVIDER_LABELS[provider]} · ${settings?.ai_model ?? (provider === 'gemini' ? 'gemini-2.5-flash' : 'gpt-4.1-mini')}`;
+		const aiModelLabel = `${AI_PROVIDER_LABELS[provider]} · ${settings?.ai_model ?? AI_PROVIDER_MODELS[provider]}`;
 
 		const detailData = await buildWorkflowDetailData(octokit, ownerParam, repoParam, workflowId, {
 			days: lookbackDays,

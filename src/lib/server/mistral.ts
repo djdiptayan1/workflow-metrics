@@ -1,33 +1,39 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createMistral } from '@ai-sdk/mistral';
 import { generateText, Output } from 'ai';
 import { z } from 'zod';
 import type { WorkflowMetrics, OptimizationResult, OptimizationItem } from '$lib/types/metrics';
 
-export type AIProvider = 'openai' | 'gemini';
+export type AIProvider = 'openai' | 'gemini' | 'mistral';
 
-const PROVIDER_MODELS: Record<AIProvider, string> = {
+export const AI_PROVIDER_MODELS: Record<AIProvider, string> = {
 	openai: 'gpt-4.1-mini',
-	gemini: 'gemini-2.5-flash'
+	gemini: 'gemini-2.5-flash',
+	mistral: 'mistral-small-latest'
 };
 
 export const AI_PROVIDER_LABELS: Record<AIProvider, string> = {
 	openai: 'OpenAI',
-	gemini: 'Google Gemini'
+	gemini: 'Google Gemini',
+	mistral: 'Mistral AI'
 };
 
 export function createAIModel(provider: AIProvider, apiKey: string, model?: string | null) {
-	return provider === 'gemini'
-		? createGoogleGenerativeAI({ apiKey })(model || PROVIDER_MODELS.gemini)
-		: createOpenAI({ apiKey })(model || PROVIDER_MODELS.openai);
+	const modelId = model || AI_PROVIDER_MODELS[provider];
+	if (provider === 'gemini') return createGoogleGenerativeAI({ apiKey })(modelId);
+	if (provider === 'mistral') return createMistral({ apiKey })(modelId);
+	return createOpenAI({ apiKey })(modelId);
 }
 
 export async function fetchAvailableModels(provider: AIProvider, apiKey: string): Promise<string[]> {
 	const response = await fetch(
 		provider === 'gemini'
 			? `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=${encodeURIComponent(apiKey)}`
-			: 'https://api.openai.com/v1/models',
-		provider === 'openai' ? { headers: { Authorization: `Bearer ${apiKey}` } } : undefined
+			: provider === 'mistral'
+				? 'https://api.mistral.ai/v1/models'
+				: 'https://api.openai.com/v1/models',
+		provider === 'gemini' ? undefined : { headers: { Authorization: `Bearer ${apiKey}` } }
 	);
 
 	if (!response.ok) {
@@ -43,6 +49,16 @@ export async function fetchAvailableModels(provider: AIProvider, apiKey: string)
 		return (data.models ?? [])
 			.filter((model) => model.supportedGenerationMethods?.includes('generateContent'))
 			.map((model) => model.name.replace(/^models\//, ''))
+			.sort();
+	}
+
+	if (provider === 'mistral') {
+		const data = (await response.json()) as {
+			data?: Array<{ id: string; capabilities?: { completion_chat?: boolean } }>;
+		};
+		return (data.data ?? [])
+			.filter((model) => model.capabilities?.completion_chat !== false)
+			.map((model) => model.id)
 			.sort();
 	}
 

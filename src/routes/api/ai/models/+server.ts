@@ -7,7 +7,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!user) throw error(401, 'Unauthorized');
 
 	const body = (await request.json()) as { provider?: string; apiKey?: string };
-	const provider: AIProvider = body.provider === 'gemini' ? 'gemini' : 'openai';
+	const provider: AIProvider =
+		body.provider === 'gemini' || body.provider === 'mistral' ? body.provider : 'openai';
 	let apiKey = body.apiKey?.trim();
 
 	if (!apiKey) {
