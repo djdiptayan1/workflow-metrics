@@ -3,6 +3,19 @@ node_modules
 
 # Output
 .output
+
+# Impeccable local design artifacts
+DESIGN.md
+PRODUCT.md
+.impeccable/
+
+# Local MCP configuration
+.mcp.json
+/.cursor
+/.pnpm-store
+/.firecrawl
+/.github/hooks
+/.github/skills
 .vercel
 .netlify
 .wrangler
@@ -56,6 +69,8 @@ lerna-debug.log*
 .cache/
 tmp/
 temp/
+output/
+.playwright-cli/
 
 # Supabase
 supabase/.temp
