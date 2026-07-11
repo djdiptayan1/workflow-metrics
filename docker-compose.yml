@@ -1,0 +1,15 @@
+services:
+  ci-observe:
+    build: .
+    ports:
+      - "5173:5173"
+    env_file: .env
+    environment:
+      CI: "true"
+    command: sh -c "pnpm install --frozen-lockfile && pnpm dev --host 0.0.0.0"
+    volumes:
+      - .:/app
+      - ci_observe_node_modules:/app/node_modules
+
+volumes:
+  ci_observe_node_modules:
