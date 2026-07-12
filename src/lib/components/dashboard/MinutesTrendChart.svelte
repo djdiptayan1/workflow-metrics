@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { MinutesDataPoint } from '$lib/types/metrics';
+	import { formatMinutes } from '$lib/utils';
 
 	let {
 		data,
@@ -14,13 +15,6 @@
 	const CHART_HEIGHT = 120;
 
 	const maxMinutes = $derived(Math.max(...data.map((d) => d.minutes), 1));
-
-	function formatMinutes(m: number): string {
-		if (m < 60) return `${m}m`;
-		const h = Math.floor(m / 60);
-		const min = m % 60;
-		return min > 0 ? `${h}h ${min}m` : `${h}h`;
-	}
 
 	function formatDate(dateStr: string): string {
 		const d = new Date(dateStr + 'T00:00:00');
@@ -58,7 +52,7 @@
 <div class="bg-card border border-border rounded-xl p-5 space-y-4">
 	<div class="flex items-start justify-between">
 		<div>
-			<h3 class="text-sm font-semibold text-foreground">{title}</h3>
+			<h2 class="text-sm font-semibold text-foreground">{title}</h2>
 			{#if subtitle}
 				<p class="text-xs text-muted-foreground mt-0.5">{subtitle}</p>
 			{/if}

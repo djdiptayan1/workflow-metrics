@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { WorkflowMinutesShare, JobMinutesShare, RunnerType } from '$lib/types/metrics';
 	import { buildMinutesSegmentKey } from './segment-keys';
+	import { formatMinutes } from '$lib/utils';
 
 	type Segment = {
 		key: string;
@@ -183,13 +184,6 @@
 		return result;
 	}
 
-	function formatMinutes(m: number): string {
-		if (m < 60) return `${m}m`;
-		const h = Math.floor(m / 60);
-		const min = m % 60;
-		return min > 0 ? `${h}h ${min}m` : `${h}h`;
-	}
-
 	// Tooltip state
 	let hoveredIndex = $state<number | null>(null);
 	let tooltipX = $state(0);
@@ -215,7 +209,7 @@
 
 <div class="bg-card border-border space-y-4 rounded-xl border p-5">
 	<div>
-		<h3 class="text-foreground text-sm font-semibold">{title}</h3>
+		<h2 class="text-foreground text-sm font-semibold">{title}</h2>
 		{#if subtitle}
 			<p class="text-muted-foreground mt-0.5 text-xs">{subtitle}</p>
 		{/if}

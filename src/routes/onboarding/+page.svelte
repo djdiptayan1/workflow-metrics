@@ -55,6 +55,14 @@
 		else selectedRepos.add(id);
 	}
 
+	function toggleSelectAllVisible() {
+		const allVisibleSelected = filteredRepos.every((repo) => selectedRepos.has(repo.id));
+		for (const repo of filteredRepos) {
+			if (allVisibleSelected) selectedRepos.delete(repo.id);
+			else selectedRepos.add(repo.id);
+		}
+	}
+
 	function getSelectedReposData() {
 		return repos
 			.filter((r) => selectedRepos.has(r.id))
@@ -62,13 +70,19 @@
 	}
 </script>
 
-<div class="bg-background flex min-h-screen flex-col items-center justify-center p-4">
+<svelte:head>
+	<title
+		>{data.addOrgOnly ? 'Add organization' : 'Select repositories'} · Workflow Metrics</title
+	>
+</svelte:head>
+
+<main class="bg-background flex min-h-screen flex-col items-center justify-center p-4">
 	<div class="w-full max-w-2xl space-y-8">
 		{#if data.fromSettings}
 			<div class="flex w-full justify-start">
 				<a
 					href="/settings"
-					class="text-muted-foreground hover:text-foreground inline-flex items-center gap-2 text-sm transition-colors"
+					class="text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex items-center gap-2 rounded-md py-2 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none"
 				>
 					<svg
 						class="size-4"
@@ -76,6 +90,7 @@
 						fill="none"
 						stroke="currentColor"
 						stroke-width="2"
+						aria-hidden="true"
 					>
 						<polyline points="15 18 9 12 15 6" />
 					</svg>
@@ -85,17 +100,17 @@
 		{/if}
 		<div class="space-y-2 text-center">
 			<div class="flex items-center justify-center gap-2">
-				<img src="/logo.svg" alt="" class="size-8 h-8 w-8 object-contain" />
-				<span class="text-xl font-bold">Workflow Metrics</span>
+				<img src="/logo.svg" alt="" class="size-8 object-contain" />
+				<span class="text-xl font-semibold">Workflow Metrics</span>
 			</div>
-			<h1 class="text-2xl font-semibold">
+			<h1 class="text-xl font-semibold">
 				{data.addOrgOnly ? 'Add repositories from an organization' : 'Select repositories to track'}
 			</h1>
-			<p class="text-muted-foreground text-sm">
-				{data.addOrgOnly
-					? 'Choose an organization, then select which repositories to monitor.'
-					: 'Choose which repositories you want to monitor'}
-			</p>
+			{#if data.addOrgOnly}
+				<p class="text-muted-foreground text-sm">
+					Choose an organization, then select which repositories to monitor.
+				</p>
+			{/if}
 		</div>
 
 		<!-- Step 1: Select account/org -->
@@ -131,8 +146,10 @@
 			<div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
 				{#each data.accounts as account (account.login)}
 					<button
+						type="button"
 						onclick={() => selectAccount(account)}
-						class="flex items-center gap-3 rounded-lg border p-3 text-left transition-colors
+						aria-pressed={selectedAccount === account.login}
+						class="focus-visible:ring-ring flex min-h-11 items-center gap-3 rounded-lg border p-3 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none
 							{selectedAccount === account.login
 							? 'border-primary bg-primary/10'
 							: 'border-border hover:border-muted-foreground/40'}"
@@ -162,8 +179,12 @@
 				</div>
 
 				{#if loadingRepos}
-					<div class="text-muted-foreground flex items-center justify-center py-8">
-						<svg class="mr-2 size-5 animate-spin" viewBox="0 0 24 24" fill="none">
+					<div
+						class="text-muted-foreground flex items-center justify-center py-8"
+						role="status"
+						aria-live="polite"
+					>
+						<svg class="mr-2 size-5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
 							<circle
 								class="opacity-25"
 								cx="12"
@@ -181,26 +202,38 @@
 						Loading repositories...
 					</div>
 				{:else if repoError}
-					<p class="text-destructive py-6 text-center text-sm">{repoError}</p>
+					<p class="text-destructive py-6 text-center text-sm" role="alert">{repoError}</p>
 				{:else if repos.length === 0}
 					<p class="text-muted-foreground py-6 text-center text-sm">No repositories found</p>
 				{:else}
-					<label class="relative block">
-						<span class="sr-only">Search repositories</span>
-						<input
-							bind:value={repoQuery}
-							type="search"
-							placeholder="Search repositories"
-							class="border-border bg-background text-foreground placeholder:text-muted-foreground focus:ring-ring w-full rounded-md border py-2 pr-3 pl-9 text-sm focus:ring-2 focus:outline-none"
-						/>
-						<svg
-							class="text-muted-foreground pointer-events-none absolute top-2.5 left-3 size-4"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg
+					<div class="flex items-center gap-2">
+						<label class="relative block flex-1">
+							<span class="sr-only">Search repositories</span>
+							<input
+								bind:value={repoQuery}
+								type="search"
+								placeholder="Search repositories"
+								class="border-border bg-background text-foreground placeholder:text-muted-foreground focus:ring-ring w-full rounded-md border py-2 pr-3 pl-9 text-sm focus:ring-2 focus:outline-none"
+							/>
+							<svg
+								class="text-muted-foreground pointer-events-none absolute top-2.5 left-3 size-4"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg
+							>
+						</label>
+						<button
+							type="button"
+							onclick={toggleSelectAllVisible}
+							class="border-border text-foreground hover:bg-muted focus-visible:ring-ring min-h-11 shrink-0 rounded-md border px-3 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none"
 						>
-					</label>
+							{filteredRepos.every((repo) => selectedRepos.has(repo.id)) && filteredRepos.length > 0
+								? 'Deselect all'
+								: `Select all (${filteredRepos.length})`}
+						</button>
+					</div>
 					<div class="max-h-80 space-y-2 overflow-y-auto">
 						{#each filteredRepos as repo (repo.id)}
 							<label
@@ -209,12 +242,22 @@
 									? 'border-primary bg-primary/5'
 									: 'border-border hover:border-muted-foreground/30'}"
 							>
-								<input
-									type="checkbox"
-									checked={selectedRepos.has(repo.id)}
-									onchange={() => toggleRepo(repo.id)}
-									class="border-border accent-primary rounded"
-								/>
+								<span class="relative flex size-4 shrink-0">
+									<input
+										type="checkbox"
+										checked={selectedRepos.has(repo.id)}
+										onchange={() => toggleRepo(repo.id)}
+										class="border-border checked:border-primary checked:bg-primary focus-visible:ring-ring size-4 cursor-pointer appearance-none rounded border bg-background focus-visible:ring-2 focus-visible:outline-none"
+									/>
+									<svg
+										class="text-primary-foreground pointer-events-none absolute inset-0 m-auto size-3 {selectedRepos.has(repo.id) ? 'opacity-100' : 'opacity-0'}"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										stroke-width="3"
+										aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg
+									>
+								</span>
 								<div class="min-w-0 flex-1">
 									<p class="truncate text-sm font-medium">{repo.name}</p>
 									<p class="text-muted-foreground text-xs">{repo.fullName}</p>
@@ -265,4 +308,4 @@
 			</form>
 		{/if}
 	</div>
-</div>
+</main>

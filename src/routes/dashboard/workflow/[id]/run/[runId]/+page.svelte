@@ -1,8 +1,15 @@
 <script lang="ts">
 	import type { PageData } from './$types';
+	import { formatDuration, formatRelativeTime } from '$lib/utils';
 	let { data }: { data: PageData } = $props();
 	const failedJob = $derived(data.jobs.find((job) => job.conclusion === 'failure') ?? null);
+	const durationMs = $derived(
+		data.run.run_started_at
+			? new Date(data.run.updated_at).getTime() - new Date(data.run.run_started_at).getTime()
+			: null
+	);
 	let copyingLog = $state(false);
+	let copiedLog = $state(false);
 	let analyzing = $state(false);
 	let actionError = $state<string | null>(null);
 	let analysis = $state<string | null>(null);
@@ -10,6 +17,7 @@
 
 	async function copyEntireLog() {
 		copyingLog = true;
+		copiedLog = false;
 		actionError = null;
 		try {
 			const response = await fetch('/api/run-log', {
@@ -21,6 +29,8 @@
 			if (!response.ok || !result.log)
 				throw new Error(result.message ?? 'Could not fetch the full log.');
 			await navigator.clipboard.writeText(result.log);
+			copiedLog = true;
+			setTimeout(() => (copiedLog = false), 2000);
 		} catch (error) {
 			actionError = error instanceof Error ? error.message : 'Could not copy the log.';
 		} finally {
@@ -59,7 +69,8 @@
 <div class="mx-auto max-w-5xl space-y-6">
 	<a
 		href={`/dashboard/workflow/${data.workflowId}?owner=${encodeURIComponent(data.owner)}&repo=${encodeURIComponent(data.repo)}`}
-		class="text-primary text-sm font-medium hover:underline">← Back to workflow</a
+		class="text-primary focus-visible:ring-ring rounded-md text-sm font-medium hover:underline focus-visible:ring-2 focus-visible:outline-none"
+		>← Back to workflow</a
 	>
 	<div>
 		<p class="text-muted-foreground text-sm">
@@ -68,6 +79,12 @@
 		<h1 class="text-foreground mt-1 text-xl font-semibold">
 			{data.run.conclusion === 'failure' ? 'Failure investigation' : 'Run details'}
 		</h1>
+		<p class="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+			{#if data.run.head_branch}<span class="bg-secondary text-secondary-foreground rounded px-1.5 py-0.5 font-mono">{data.run.head_branch}</span>{/if}
+			{#if data.run.actor?.login}<span>{data.run.actor.login}</span>{/if}
+			{#if durationMs != null}<span>{formatDuration(durationMs)}</span>{/if}
+			{#if data.run.run_started_at}<span>{formatRelativeTime(data.run.run_started_at)}</span>{/if}
+		</p>
 	</div>
 	{#if failedJob}
 		<section class="border-destructive/40 bg-destructive/10 rounded-xl border p-5">
@@ -78,19 +95,27 @@
 						type="button"
 						onclick={copyEntireLog}
 						disabled={copyingLog}
-						class="border-border bg-card text-foreground hover:bg-muted rounded-md border px-3 py-1.5 text-xs font-medium disabled:opacity-50"
-						>{copyingLog ? 'Copying…' : 'Copy entire log'}</button
-					><button
-						type="button"
-						onclick={analyzeFailure}
-						disabled={analyzing}
-						class="bg-primary text-primary-foreground hover:bg-primary/90 rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-50"
-						>{analyzing ? 'Analyzing…' : 'Explain with AI'}</button
-					>
+						class="border-border bg-card text-foreground hover:bg-muted focus-visible:ring-ring rounded-md border px-3 py-1.5 text-xs font-medium disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none"
+						>{copyingLog ? 'Copying…' : copiedLog ? 'Copied!' : 'Copy entire log'}</button
+					>{#if data.hasAiKey}<button
+							type="button"
+							onclick={analyzeFailure}
+							disabled={analyzing}
+							class="bg-primary text-primary-foreground hover:bg-primary/90 focus-visible:ring-ring rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none"
+							>{analyzing ? 'Analyzing…' : 'Explain with AI'}</button
+						>{:else}<a
+							href="/settings"
+							title="Add an OpenAI, Gemini, or Mistral API key in settings to enable AI analysis"
+							class="border-border text-muted-foreground hover:text-foreground focus-visible:ring-ring rounded-md border px-3 py-1.5 text-xs font-medium focus-visible:ring-2 focus-visible:outline-none"
+							>Explain with AI</a
+						>{/if}
 				</div>
 			</div>
 			{#if data.failureExcerpt}<pre
-					class="text-foreground mt-4 max-h-96 overflow-auto rounded-md bg-black/20 p-4 text-xs leading-5"><code
+					tabindex="0"
+					role="region"
+					aria-label="Failure log excerpt"
+					class="text-foreground bg-muted focus-visible:ring-ring mt-4 max-h-96 overflow-auto rounded-md p-4 text-xs leading-5 focus-visible:ring-2 focus-visible:outline-none"><code
 						>{data.failureExcerpt}</code
 					></pre>{:else}<p class="text-muted-foreground mt-2 text-sm">
 					GitHub did not return a readable log excerpt. Review the failed step below or open the
@@ -99,13 +124,17 @@
 				href={data.run.html_url}
 				target="_blank"
 				rel="noreferrer"
-				class="text-primary mt-4 inline-flex text-sm font-medium hover:underline"
+				class="text-primary focus-visible:ring-ring mt-4 inline-flex rounded-md text-sm font-medium hover:underline focus-visible:ring-2 focus-visible:outline-none"
 				>Open full GitHub log ↗</a
 			>
 		</section>
 	{/if}
 	{#if actionError}<p class="text-destructive text-sm" role="alert">{actionError}</p>{/if}
-	{#if analysis}<section class="border-primary/30 bg-primary/5 rounded-xl border p-5">
+	{#if analysis}<section
+			class="border-primary/30 bg-primary/5 rounded-xl border p-5"
+			role="status"
+			aria-live="polite"
+		>
 			<h2 class="text-foreground text-sm font-semibold">AI failure analysis</h2>
 			<div class="analysis-markdown text-foreground mt-3 text-sm leading-6">
 				{@html analysisHtml}
@@ -116,6 +145,11 @@
 			<h2 class="text-foreground text-sm font-semibold">Jobs and steps</h2>
 		</div>
 		<div class="divide-border divide-y">
+			{#if data.jobs.length === 0}
+				<p class="text-muted-foreground p-5 text-sm">
+					No jobs were scheduled for this run (it may have been cancelled before starting).
+				</p>
+			{/if}
 			{#each data.jobs as job (job.id)}<div class="p-5">
 					<div class="flex items-center justify-between gap-3">
 						<p
@@ -142,11 +176,18 @@
 											: step.conclusion === 'success'
 												? 'bg-success text-white'
 												: 'bg-muted text-muted-foreground'}"
+										aria-hidden="true"
 										>{step.conclusion === 'failure'
 											? '×'
 											: step.conclusion === 'success'
 												? '✓'
 												: '•'}</span
+									><span class="sr-only"
+										>{step.conclusion === 'failure'
+											? 'Failed: '
+											: step.conclusion === 'success'
+												? 'Succeeded: '
+												: 'Pending: '}</span
 									>{#if index < job.steps.length - 1}<span
 											class="bg-border absolute top-6 left-3 h-[calc(100%-1rem)] w-px"
 										></span>{/if}
@@ -178,10 +219,10 @@
 		color: var(--foreground);
 	}
 	.analysis-markdown :global(h1) {
-		font-size: 1.125rem;
+		font-size: 1.25rem;
 	}
 	.analysis-markdown :global(h2) {
-		font-size: 1rem;
+		font-size: 0.875rem;
 	}
 	.analysis-markdown :global(p),
 	.analysis-markdown :global(ul),
@@ -196,7 +237,7 @@
 		margin: 0.25rem 0;
 	}
 	.analysis-markdown :global(code) {
-		border-radius: 0.25rem;
+		border-radius: 0.375rem;
 		background: var(--muted);
 		padding: 0.1rem 0.25rem;
 		font-size: 0.85em;

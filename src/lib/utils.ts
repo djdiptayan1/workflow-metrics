@@ -17,6 +17,13 @@ export type WithElementRef<T, U extends HTMLElement = HTMLElement> = T & {
 	ref?: U | null;
 };
 
+export function formatMinutes(m: number): string {
+	if (m < 60) return `${m}m`;
+	const h = Math.floor(m / 60);
+	const min = m % 60;
+	return min > 0 ? `${h}h ${min}m` : `${h}h`;
+}
+
 export function formatDuration(ms: number | null | undefined): string {
 	if (ms == null || ms < 0) return '—';
 	if (ms < 1000) return `${ms}ms`;

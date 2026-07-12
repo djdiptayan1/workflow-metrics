@@ -142,7 +142,7 @@
 
 <div class="bg-card border-border space-y-4 rounded-xl border p-5">
 	<div class="flex items-center justify-between">
-		<h3 class="text-foreground text-sm font-semibold">Run History · {windowLabel}</h3>
+		<h2 class="text-foreground text-sm font-semibold">Run History · {windowLabel}</h2>
 		<div class="text-muted-foreground flex items-center gap-4 text-xs">
 			<span class="flex items-center gap-1.5">
 				<span class="bg-success inline-block size-2 rounded-full"></span> Success

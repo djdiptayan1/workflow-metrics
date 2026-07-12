@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import ThemeToggle from './ThemeToggle.svelte';
 
 	const isWorkflowDetail = $derived(page.url.pathname.startsWith('/dashboard/workflow'));
 	const owner = $derived(page.url.searchParams.get('owner'));
@@ -57,10 +56,5 @@
 		{:else if page.url.pathname.startsWith('/pull-requests')}
 			<span class="text-foreground text-sm font-medium">Pull requests</span>
 		{/if}
-	</div>
-
-	<!-- Right controls -->
-	<div class="flex items-center gap-2">
-		<ThemeToggle />
 	</div>
 </header>

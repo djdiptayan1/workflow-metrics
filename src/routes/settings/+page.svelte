@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types';
 	import { enhance } from '$app/forms';
-	import { onMount } from 'svelte';
+	import { applyTheme, loadStoredTheme, type ThemePreference } from '$lib/theme';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
@@ -16,18 +16,28 @@
 	let aiSettingsInitialized = false;
 	let loadingModels = $state(false);
 	let modelsError = $state('');
-	let workflowModes = $state<Record<string, 'personal' | 'shared'>>({});
+	let workflowModes = $state<Record<string, 'personal' | 'shared'>>(data.workflowModes ?? {});
 	let workflowModeError = $state<string | null>(null);
 	let savingWorkflowMode = $state<string | null>(null);
 
-	onMount(async () => {
-		const response = await fetch('/api/workflow-preferences');
-		if (!response.ok) return;
-		const result = (await response.json()) as {
-			modes: Record<string, 'personal' | 'shared'>;
-		};
-		workflowModes = result.modes;
+	// Single source of truth for every field either save form submits, so saving one
+	// form never reverts unsaved edits made in the other (both forms bind to these).
+	let theme = $state<ThemePreference>('dark');
+	let actionsLookback = $state('30');
+	let dashboardRefreshInterval = $state('5');
+	let preferencesInitialized = false;
+	$effect(() => {
+		if (preferencesInitialized) return;
+		theme = loadStoredTheme();
+		actionsLookback = data.settings?.actions_lookback ?? '30';
+		dashboardRefreshInterval = data.settings?.dashboard_refresh_interval ?? '5';
+		preferencesInitialized = true;
 	});
+
+	function onThemeChange(next: ThemePreference) {
+		theme = next;
+		applyTheme(next);
+	}
 
 	async function setWorkflowMode(
 		repo: { id: string; owner: string; name: string },
@@ -207,17 +217,23 @@
 						{/if}
 						{#if !repo.is_active}
 							<span
-								class="shrink-0 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-2 py-0.5 text-xs font-medium text-yellow-500"
+								class="shrink-0 rounded-md border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning"
 								>Inactive</span
 							>
 						{/if}
 					</div>
 					{#if repo.is_active}
-						<form method="POST" action="?/removeRepo" use:enhance>
+						<form
+							method="POST"
+							action="?/removeRepo"
+							use:enhance={({ cancel }) => {
+								if (!confirm(`Stop tracking ${repo.full_name}? You can add it back later.`)) cancel();
+							}}
+						>
 							<input type="hidden" name="repo_id" value={repo.id} />
 							<button
 								type="submit"
-								class="text-muted-foreground hover:text-destructive text-xs transition-colors"
+								class="text-muted-foreground hover:text-destructive min-h-11 px-2 text-xs transition-colors"
 							>
 								Remove
 							</button>
@@ -225,12 +241,15 @@
 					{/if}
 					<div
 						class="border-border bg-muted/30 flex shrink-0 items-center rounded-md border p-0.5 text-xs"
+						role="group"
+						aria-label={`Workflow preference mode for ${repo.full_name}`}
 					>
 						<button
 							type="button"
 							onclick={() => setWorkflowMode(repo, 'personal')}
 							disabled={savingWorkflowMode === repo.id}
-							class="rounded px-2 py-1 {workflowModes[repo.id] !== 'shared'
+							aria-pressed={workflowModes[repo.id] !== 'shared'}
+							class="min-h-11 rounded px-2 py-1 {workflowModes[repo.id] !== 'shared'
 								? 'bg-card text-foreground shadow-sm'
 								: 'text-muted-foreground'}">Personal</button
 						>
@@ -238,7 +257,9 @@
 							type="button"
 							onclick={() => setWorkflowMode(repo, 'shared')}
 							disabled={savingWorkflowMode === repo.id}
-							class="rounded px-2 py-1 {workflowModes[repo.id] === 'shared'
+							aria-pressed={workflowModes[repo.id] === 'shared'}
+							title="Requires GitHub repository admin access"
+							class="min-h-11 rounded px-2 py-1 {workflowModes[repo.id] === 'shared'
 								? 'bg-card text-foreground shadow-sm'
 								: 'text-muted-foreground'}">Shared</button
 						>
@@ -268,7 +289,7 @@
 				</div>
 				{#if data.installations.length > 0}
 					<span
-						class="flex shrink-0 items-center gap-1.5 rounded-full border border-green-500/20 bg-green-500/10 px-2.5 py-1 text-xs font-medium text-green-400"
+						class="flex shrink-0 items-center gap-1.5 rounded-full border border-success/20 bg-success/10 px-2.5 py-1 text-xs font-medium text-success"
 					>
 						<svg
 							class="size-3"
@@ -281,7 +302,7 @@
 					</span>
 				{:else}
 					<span
-						class="flex shrink-0 items-center gap-1.5 rounded-full border border-yellow-500/20 bg-yellow-500/10 px-2.5 py-1 text-xs font-medium text-yellow-400"
+						class="flex shrink-0 items-center gap-1.5 rounded-full border border-warning/20 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning"
 					>
 						<svg
 							class="size-3"
@@ -299,14 +320,14 @@
 				<p class="text-destructive text-xs">{data.appError}</p>
 			{/if}
 			{#if data.appSuccess}
-				<p class="text-xs text-green-400">GitHub App installed successfully.</p>
+				<p class="text-xs text-success">GitHub App installed successfully.</p>
 			{/if}
 			{#if form?.syncError}
 				<p class="text-destructive text-xs">{form.syncError}</p>
 			{/if}
 			{#if form?.syncResult}
 				{#if form.syncResult.added > 0 || form.syncResult.removed > 0}
-					<p class="text-xs text-green-400">
+					<p class="text-xs text-success">
 						{form.syncResult.added > 0 && form.syncResult.removed > 0
 							? `Synced: ${form.syncResult.added} added, ${form.syncResult.removed} removed.`
 							: form.syncResult.added > 0
@@ -314,7 +335,7 @@
 								: `${form.syncResult.removed} installation${form.syncResult.removed > 1 ? 's' : ''} removed.`}
 					</p>
 				{:else if form.syncResult.notFound}
-					<p class="text-xs text-yellow-400">
+					<p class="text-xs text-warning">
 						No installations found on GitHub matching your accounts. Make sure you installed the app
 						on the right account or organization.
 					</p>
@@ -328,7 +349,7 @@
 				<div class="space-y-2">
 					{#each data.installations as inst (inst.id)}
 						<div
-							class="flex items-center justify-between rounded-lg border border-green-500/20 bg-green-500/5 px-3 py-2"
+							class="flex items-center justify-between rounded-lg border border-success/20 bg-success/5 px-3 py-2"
 						>
 							<div class="flex min-w-0 items-center gap-3">
 								{#if inst.account_avatar_url}
@@ -472,23 +493,15 @@
 			{/if}
 			{#if form?.success}
 				<div
-					class="rounded-lg border border-green-500/20 bg-green-500/10 px-4 py-3 text-sm text-green-500"
+					class="rounded-lg border border-success/20 bg-success/10 px-4 py-3 text-sm text-success"
 				>
 					Settings saved successfully.
 				</div>
 			{/if}
-			<input type="hidden" name="theme" value={data.settings?.theme ?? 'dark'} />
-			<input type="hidden" name="default_repo_id" value={data.settings?.default_repo_id ?? ''} />
-			<input
-				type="hidden"
-				name="actions_lookback"
-				value={data.settings?.actions_lookback ?? '30'}
-			/>
-			<input
-				type="hidden"
-				name="dashboard_refresh_interval"
-				value={data.settings?.dashboard_refresh_interval ?? '5'}
-			/>
+			<input type="hidden" name="theme" value={theme} />
+			<input type="hidden" name="default_repo_id" value={defaultRepoId} />
+			<input type="hidden" name="actions_lookback" value={actionsLookback} />
+			<input type="hidden" name="dashboard_refresh_interval" value={dashboardRefreshInterval} />
 			<div class="space-y-2">
 				<label class="text-foreground block text-sm font-medium" for="ai_provider"
 					>AI provider</label
@@ -529,7 +542,9 @@
 					<button
 						type="button"
 						onclick={() => (showAiKey = !showAiKey)}
-						class="border-border text-muted-foreground hover:text-foreground rounded-lg border px-3 py-2 transition-colors"
+						aria-label={showAiKey ? 'Hide API key' : 'Show API key'}
+						aria-pressed={showAiKey}
+						class="border-border text-muted-foreground hover:text-foreground min-h-11 rounded-lg border px-3 py-2 transition-colors"
 					>
 						{#if showAiKey}
 							<svg
@@ -622,21 +637,22 @@
 			{/if}
 			{#if form?.success}
 				<div
-					class="rounded-lg border border-green-500/20 bg-green-500/10 px-4 py-3 text-sm text-green-500"
+					class="rounded-lg border border-success/20 bg-success/10 px-4 py-3 text-sm text-success"
 				>
 					Settings saved successfully.
 				</div>
 			{/if}
-			<input type="hidden" name="ai_provider" value={data.settings?.ai_provider ?? 'openai'} />
-			<input type="hidden" name="ai_api_key" value={data.settings?.ai_api_key ?? ''} />
-			<input type="hidden" name="ai_model" value={data.settings?.ai_model ?? ''} />
+			<input type="hidden" name="ai_provider" value={aiProvider} />
+			<input type="hidden" name="ai_api_key" value={aiApiKey} />
+			<input type="hidden" name="ai_model" value={aiModel} />
 			<!-- Theme -->
 			<div class="space-y-2">
 				<label class="text-foreground block text-sm font-medium" for="theme">Theme</label>
 				<select
 					id="theme"
 					name="theme"
-					value={data.settings?.theme ?? 'dark'}
+					value={theme}
+					onchange={(event) => onThemeChange((event.currentTarget as HTMLSelectElement).value as ThemePreference)}
 					class="bg-background border-input text-foreground focus:ring-ring rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:outline-none"
 				>
 					<option value="dark">Dark (default)</option>
@@ -653,7 +669,7 @@
 				<select
 					id="actions_lookback"
 					name="actions_lookback"
-					value={data.settings?.actions_lookback ?? '30'}
+					bind:value={actionsLookback}
 					class="bg-background border-input text-foreground focus:ring-ring rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:outline-none"
 				>
 					<option value="7">Last 7 days</option>
@@ -673,7 +689,7 @@
 				<select
 					id="dashboard_refresh_interval"
 					name="dashboard_refresh_interval"
-					value={data.settings?.dashboard_refresh_interval ?? '5'}
+					bind:value={dashboardRefreshInterval}
 					class="bg-background border-input text-foreground focus:ring-ring rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:outline-none"
 				>
 					<option value="realtime">Realtime (fetch on every visit)</option>
@@ -718,8 +734,8 @@
 	</section>
 
 	<!-- Danger zone -->
-	<section class="bg-card border-destructive/20 overflow-hidden rounded-xl border">
-		<div class="border-destructive/20 border-b p-5">
+	<section class="bg-card border-border overflow-hidden rounded-xl border">
+		<div class="border-border border-b p-5">
 			<h2 class="text-foreground text-sm font-semibold">Account</h2>
 		</div>
 		<div class="flex items-center justify-between p-5">

@@ -22,16 +22,15 @@
 
 	const filteredPullRequests = $derived(
 		pullRequests.filter((pull) => {
-			const matchesState =
-				filter === 'merged'
-					? Boolean(pull.mergedAt)
-					: filter === 'open'
-						? pull.state === 'open'
-						: pull.state === 'closed' && !pull.mergedAt;
 			const term = query.trim().replace(/^#/, '').toLowerCase();
-			return (
-				matchesState && (term === '' || `${pull.number} ${pull.title}`.toLowerCase().includes(term))
-			);
+			// While actively searching, search across every state (open/closed/merged) — not just
+			// the selected tab — so results aren't silently hidden by whichever tab happens to be active.
+			if (term !== '') return `${pull.number} ${pull.title}`.toLowerCase().includes(term);
+			return filter === 'merged'
+				? Boolean(pull.mergedAt)
+				: filter === 'open'
+					? pull.state === 'open'
+					: pull.state === 'closed' && !pull.mergedAt;
 		})
 	);
 
@@ -98,32 +97,37 @@
 	</div>
 
 	<div class="border-border flex flex-wrap items-end justify-between gap-3 border-b">
-		<div class="flex gap-2">
+		<div class="flex gap-2" class:opacity-50={query.trim() !== ''}>
 			{#each ['open', 'closed', 'merged'] as item}
 				<button
 					type="button"
 					onclick={() => (filter = item as typeof filter)}
-					class={`border-b-2 px-3 py-2 text-sm font-medium capitalize ${filter === item ? 'border-primary text-foreground' : 'text-muted-foreground hover:text-foreground border-transparent'}`}
+					class={`border-b-2 px-3 py-2 text-sm font-medium capitalize ${filter === item && query.trim() === '' ? 'border-primary text-foreground' : 'text-muted-foreground hover:text-foreground border-transparent'}`}
 					>{item}</button
 				>
 			{/each}
 		</div>
-		<label class="relative mb-1 block w-full sm:w-72">
-			<span class="sr-only">Search pull requests</span>
-			<input
-				bind:value={query}
-				type="search"
-				placeholder="Search PR # or title"
-				class="border-border bg-card text-foreground placeholder:text-muted-foreground focus:ring-ring w-full rounded-md border py-2 pr-3 pl-9 text-sm focus:ring-2 focus:outline-none"
-			/>
-			<svg
-				class="text-muted-foreground pointer-events-none absolute top-2.5 left-3 size-4"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg
-			>
-		</label>
+		<div class="flex flex-col items-end gap-1">
+			<label class="relative mb-1 block w-full sm:w-72">
+				<span class="sr-only">Search pull requests</span>
+				<input
+					bind:value={query}
+					type="search"
+					placeholder="Search PR # or title"
+					class="border-border bg-card text-foreground placeholder:text-muted-foreground focus:ring-ring w-full rounded-md border py-2 pr-3 pl-9 text-sm focus:ring-2 focus:outline-none"
+				/>
+				<svg
+					class="text-muted-foreground pointer-events-none absolute top-2.5 left-3 size-4"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg
+				>
+			</label>
+			{#if query.trim() !== ''}
+				<p class="text-muted-foreground text-xs">Searching open, closed, and merged</p>
+			{/if}
+		</div>
 	</div>
 
 	{#if loading}
@@ -136,7 +140,9 @@
 		</p>
 	{:else if filteredPullRequests.length === 0}
 		<p class="border-border text-muted-foreground rounded-lg border p-6 text-sm">
-			No {filter} pull requests{query.trim() ? ` matching “${query}”` : ''}.
+			{query.trim()
+				? `No pull requests match “${query}”.`
+				: `No ${filter} pull requests.`}
 		</p>
 	{:else}
 		<div class="border-border bg-card overflow-hidden rounded-xl border">

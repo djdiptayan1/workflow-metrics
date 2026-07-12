@@ -8,7 +8,7 @@
 	import MinutesTrendChart from '$lib/components/dashboard/MinutesTrendChart.svelte';
 	import OptimizePanel from '$lib/components/dashboard/OptimizePanel.svelte';
 	import WorkflowJobGraph from '$lib/components/dashboard/WorkflowJobGraph.svelte';
-	import { formatDuration, failureRateColor, failureRateBorderColor, successRateColor, successRateBorderColor } from '$lib/utils';
+	import { formatDuration, formatMinutes, failureRateColor, failureRateBorderColor, successRateColor, successRateBorderColor } from '$lib/utils';
 	import { keyWithIndex } from '$lib/components/dashboard/list-keys';
 
 	let { data }: { data: PageData } = $props();
@@ -29,13 +29,6 @@
 	const minutesSavedBySkips = $derived(
 		metrics.skippedCount > 0 ? Math.round((medianDurationMs * metrics.skippedCount) / 60_000) : 0
 	);
-
-	function formatMinutes(m: number): string {
-		if (m < 60) return `${m}m`;
-		const h = Math.floor(m / 60);
-		const min = m % 60;
-		return min > 0 ? `${h}h ${min}m` : `${h}h`;
-	}
 </script>
 
 <svelte:head>
@@ -85,9 +78,22 @@
 						{#if detailData.latestFailure.stepName} · {detailData.latestFailure.stepName}{/if}
 					</p>
 				</div>
-				<a href={detailData.latestFailure.htmlUrl} target="_blank" rel="noreferrer" class="rounded-md bg-destructive px-3 py-2 text-sm font-medium text-white hover:bg-destructive/90">
-					Investigate on GitHub
-				</a>
+				<div class="flex shrink-0 items-center gap-2">
+					<a
+						href={`/dashboard/workflow/${detailData.workflowId}/run/${detailData.latestFailure.runId}?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`}
+						class="rounded-md bg-destructive px-3 py-2 text-sm font-medium text-white hover:bg-destructive/90"
+					>
+						Investigate failure
+					</a>
+					<a
+						href={detailData.latestFailure.htmlUrl}
+						target="_blank"
+						rel="noreferrer"
+						class="rounded-md border border-destructive/40 px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
+					>
+						Open on GitHub
+					</a>
+				</div>
 			</div>
 		</section>
 	{/if}
@@ -190,7 +196,7 @@
 			<!-- Failure cost card (Cost Efficiency) -->
 			<div class="bg-card border border-border rounded-xl p-5 space-y-4">
 				<div>
-					<h3 class="text-sm font-semibold text-foreground">Cost Efficiency</h3>
+					<h2 class="text-sm font-semibold text-foreground">Cost Efficiency</h2>
 					<p class="text-xs text-muted-foreground mt-0.5">Where build time is going across {lookbackDescription}</p>
 				</div>
 				<div class="space-y-3">
@@ -205,7 +211,7 @@
 					</div>
 					<div class="flex items-center justify-between text-sm">
 						<span class="text-muted-foreground">Wasted on failures</span>
-						<span class="font-semibold tabular-nums {detailData.wastedMinutes > 0 ? 'text-destructive' : 'text-green-500'}">
+						<span class="font-semibold tabular-nums {detailData.wastedMinutes > 0 ? 'text-destructive' : 'text-success'}">
 							{formatMinutes(detailData.wastedMinutes)}
 							{#if detailData.totalMinutes30d > 0}
 								<span class="text-xs font-normal text-muted-foreground ml-1">
@@ -216,7 +222,7 @@
 					</div>
 					<div class="flex items-center justify-between text-sm">
 						<span class="text-muted-foreground">Successful runs</span>
-						<span class="font-semibold text-green-500 tabular-nums">
+						<span class="font-semibold text-success tabular-nums">
 							{formatMinutes(detailData.totalMinutes30d - detailData.wastedMinutes)}
 							{#if detailData.totalMinutes30d > 0}
 								<span class="text-xs font-normal text-muted-foreground ml-1">
@@ -274,7 +280,7 @@
 			{@const maxStepMs = Math.max(...detailData.stepBreakdown.map((s) => s.avgDurationMs), 1)}
 			<div class="bg-card border border-border rounded-xl p-5 space-y-4 lg:max-w-[50%] lg:min-w-[50%]">
 				<div>
-					<h3 class="text-sm font-semibold text-foreground">Step Breakdown</h3>
+					<h2 class="text-sm font-semibold text-foreground">Step Breakdown</h2>
 					<p class="text-xs text-muted-foreground mt-0.5">
 						Slowest job: <span class="font-mono">{detailData.slowestJobName}</span> · based on last 5 runs
 					</p>

@@ -29,7 +29,7 @@
 </script>
 
 <div class="bg-card border border-border rounded-xl p-5 space-y-4">
-	<h3 class="text-sm font-semibold text-foreground">Duration Trend</h3>
+	<h2 class="text-sm font-semibold text-foreground">Duration Trend</h2>
 
 	{#if completed.length < 2}
 		<div class="flex items-center justify-center h-32 text-muted-foreground text-sm">
@@ -89,10 +89,10 @@
 					cy={y(d.durationMs)}
 					r="3"
 					fill={d.conclusion === 'success'
-						? 'rgb(34 197 94)'
+						? 'var(--color-success)'
 						: d.conclusion === 'failure'
-							? 'rgb(239 68 68)'
-							: 'rgb(161 161 170)'}
+							? 'var(--color-destructive)'
+							: 'var(--color-muted-foreground)'}
 				/>
 			{/each}
 		</svg>

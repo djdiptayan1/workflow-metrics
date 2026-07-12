@@ -51,7 +51,7 @@
 		<span class="truncate tabular-nums">{node.runCount} runs</span>
 	</div>
 	{#if !compact}
-		<div class="flex items-center justify-between gap-1 text-[10px] text-muted-foreground/70">
+		<div class="flex items-center justify-between gap-1 text-[10px] text-muted-foreground">
 			<span class="tabular-nums"
 				>min {formatDuration(node.minDurationMs)} · max {formatDuration(node.maxDurationMs)}</span
 			>

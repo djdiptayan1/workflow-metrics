@@ -12,18 +12,12 @@
 	import DoraWorkflowDialog from '$lib/components/dashboard/DoraWorkflowDialog.svelte';
 	import {
 		formatDuration,
+		formatMinutes,
 		successRateColor,
 		successRateBorderColor,
 		failureRateColor,
 		failureRateBorderColor
 	} from '$lib/utils';
-
-	function formatMinutes(m: number): string {
-		if (m < 60) return `${m}m`;
-		const h = Math.floor(m / 60);
-		const min = m % 60;
-		return min > 0 ? `${h}h ${min}m` : `${h}h`;
-	}
 
 	let { data }: { data: PageData } = $props();
 
@@ -690,7 +684,7 @@
 					.slice(0, 8)}
 				<div class="bg-card border-border overflow-hidden rounded-xl border">
 					<div class="border-border border-b px-5 py-4">
-						<h3 class="text-foreground text-sm font-semibold">Top Skipped Workflows</h3>
+						<h2 class="text-foreground text-sm font-semibold">Top Skipped Workflows</h2>
 						<p class="text-muted-foreground mt-0.5 text-xs">
 							Workflows with the most skipped runs (condition not met, path filters, etc.)
 						</p>
@@ -847,7 +841,7 @@
 						{@const maxDailyMins = Math.max(...tableRows.map((r) => r.dailyMins), 1)}
 						<div class="bg-card border-border overflow-hidden rounded-xl border">
 							<div class="border-border border-b px-5 py-4">
-								<h3 class="text-foreground text-sm font-semibold">Frequency × Duration</h3>
+								<h2 class="text-foreground text-sm font-semibold">Frequency × Duration</h2>
 								<p class="text-muted-foreground mt-0.5 text-xs">
 									Workflows sorted by estimated daily minutes consumed
 								</p>

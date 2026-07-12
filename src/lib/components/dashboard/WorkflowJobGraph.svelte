@@ -12,6 +12,7 @@
 	import '@xyflow/svelte/dist/style.css';
 	import WorkflowTriggerNode from '$lib/components/dashboard/WorkflowTriggerNode.svelte';
 	import WorkflowJobNodeComponent from '$lib/components/dashboard/WorkflowJobNode.svelte';
+	import { formatDuration } from '$lib/utils';
 
 	let {
 		nodes,
@@ -22,6 +23,8 @@
 		edges: WorkflowJobEdge[];
 		class?: string;
 	} = $props();
+
+	let showList = $state(false);
 
 	// Compact mode when only 1 trigger + 1 job — smaller than full size but large enough for text
 	const compact = $derived(nodes.length === 1);
@@ -153,17 +156,47 @@
 <div class={`flex flex-col gap-3 rounded-xl border border-border bg-card p-4 ${className}`}>
 	<div class="flex items-center justify-between">
 		<div>
-			<h3 class="text-sm font-semibold text-foreground">Workflow Structure</h3>
+			<h2 class="text-sm font-semibold text-foreground">Workflow Structure</h2>
 			<p class="text-xs text-muted-foreground">Trigger and jobs with steps count.</p>
 		</div>
+		{#if flowNodes.length > 0}
+			<button
+				type="button"
+				onclick={() => (showList = !showList)}
+				aria-expanded={showList}
+				class="rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+			>
+				{showList ? 'View as diagram' : 'View as list'}
+			</button>
+		{/if}
 	</div>
 
 	{#if flowNodes.length === 0}
 		<p class="text-xs text-muted-foreground">No job data available for this workflow.</p>
+	{:else if showList}
+		<!-- Accessible text equivalent of the diagram — same data, no canvas/pointer interaction required. -->
+		<ul class="divide-y divide-border rounded-lg border border-border">
+			{#each nodes as node (node.id)}
+				<li class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-sm">
+					<div>
+						<p class="font-medium text-foreground">{node.jobName}</p>
+						<p class="text-xs text-muted-foreground">{node.runnerLabel} · {node.stepCount} steps</p>
+					</div>
+					<div class="text-right text-xs text-muted-foreground">
+						<p>avg {formatDuration(node.avgDurationMs)}</p>
+						<p>{node.successRate.toFixed(1)}% success · {node.runCount} runs</p>
+					</div>
+				</li>
+			{/each}
+		</ul>
 	{:else}
 		<div
 			class="w-full overflow-hidden rounded-lg"
 			style="height: {canvasHeight}px; min-height: {canvasHeight}px;"
+			role="img"
+			aria-label="Workflow structure diagram: trigger connected to {nodes.length} job{nodes.length === 1
+				? ''
+				: 's'}. Use the 'View as list' button for a text equivalent."
 		>
 			<SvelteFlow
 				bind:nodes={flowNodes}
@@ -174,13 +207,14 @@
 				fitViewOptions={fitViewOptions}
 				minZoom={0.2}
 				maxZoom={2}
-				zoomOnScroll={true}
-				panOnScroll={true}
+				zoomOnScroll={false}
+				panOnScroll={false}
 				panOnDrag={true}
 				zoomOnPinch={true}
 				nodesDraggable={false}
 				nodesConnectable={false}
 				elementsSelectable={false}
+				proOptions={{ hideAttribution: true }}
 				defaultEdgeOptions={{ type: 'smoothstep' }}
 			>
 				<Background

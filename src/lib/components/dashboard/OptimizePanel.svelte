@@ -227,6 +227,13 @@
 
 	async function applyAsPr() {
 		if (!selectedOptimizations.length) return;
+		const count = selectedOptimizations.length;
+		if (
+			!confirm(
+				`Open a real pull request on ${owner}/${repo} with ${count} selected change${count > 1 ? 's' : ''}? This is visible to collaborators and can trigger CI.`
+			)
+		)
+			return;
 		applyingPr = true;
 		prError = null;
 		prUrl = null;
@@ -269,19 +276,22 @@
 		return n.toLocaleString();
 	}
 
+	// Category is a neutral classification tag, not an outcome — no per-category hue (One Signal Rule).
 	type CategoryConfig = { label: string; classes: string };
+	const NEUTRAL_TAG_CLASSES = 'bg-muted text-muted-foreground border-border';
 	const CATEGORY_CONFIG: Record<string, CategoryConfig> = {
-		performance: { label: 'Performance', classes: 'bg-blue-500/15 text-blue-400 border-blue-500/20' },
-		cost:        { label: 'Cost',        classes: 'bg-green-500/15 text-green-400 border-green-500/20' },
-		reliability: { label: 'Reliability', classes: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20' },
-		security:    { label: 'Security',    classes: 'bg-red-500/15 text-red-400 border-red-500/20' },
-		maintenance: { label: 'Maintenance', classes: 'bg-slate-500/15 text-slate-400 border-slate-500/20' }
+		performance: { label: 'Performance', classes: NEUTRAL_TAG_CLASSES },
+		cost: { label: 'Cost', classes: NEUTRAL_TAG_CLASSES },
+		reliability: { label: 'Reliability', classes: NEUTRAL_TAG_CLASSES },
+		security: { label: 'Security', classes: NEUTRAL_TAG_CLASSES },
+		maintenance: { label: 'Maintenance', classes: NEUTRAL_TAG_CLASSES }
 	};
 
+	// Effort maps to the app's existing semantic tokens (low=good, high=caution) instead of new hues.
 	const EFFORT_CLASSES: Record<string, string> = {
-		Low:    'bg-green-500/15 text-green-400 border-green-500/20',
-		Medium: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20',
-		High:   'bg-red-500/15 text-red-400 border-red-500/20'
+		Low: 'bg-success/15 text-success border-success/20',
+		Medium: 'bg-warning/15 text-warning border-warning/20',
+		High: 'bg-destructive/15 text-destructive border-destructive/20'
 	};
 
 	/** Remove markdown code block fences (e.g. ```yaml and ```) from AI-generated code. */
@@ -321,7 +331,7 @@
 				</svg>
 			</div>
 			<div>
-				<h3 class="text-sm font-semibold text-foreground">AI Optimization</h3>
+				<h2 class="text-sm font-semibold text-foreground">AI Optimization</h2>
 				<p class="text-xs text-muted-foreground">Powered by {aiModelLabel} · {workflowName}</p>
 			</div>
 		</div>
@@ -600,6 +610,7 @@
 				</p>
 				<div class="flex flex-wrap items-center gap-2">
 					<button
+						type="button"
 						onclick={applyAsPr}
 						disabled={checkedItems.size === 0 || applyingPr}
 						class="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors
@@ -702,7 +713,7 @@
 
 	/* Slight highlight for the active step row */
 	.bg-primary\/8 {
-		background-color: color-mix(in srgb, var(--color-primary, oklch(0.6 0.2 264)) 8%, transparent);
+		background-color: color-mix(in srgb, var(--color-primary) 8%, transparent);
 	}
 
 	:global(.opt-code-block) {

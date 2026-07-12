@@ -10,7 +10,7 @@
 </script>
 
 <div class="bg-card border border-border rounded-xl p-5 space-y-4">
-	<h3 class="text-sm font-semibold text-foreground">Job Breakdown</h3>
+	<h2 class="text-sm font-semibold text-foreground">Job Breakdown</h2>
 	<p class="text-xs text-muted-foreground -mt-2">Based on last 5 completed runs</p>
 
 	{#if sorted.length === 0}

@@ -22,7 +22,7 @@
 </script>
 
 <div class="bg-card border border-border rounded-xl p-5 space-y-4">
-	<h3 class="text-sm font-semibold text-foreground">Avg Duration by Workflow</h3>
+	<h2 class="text-sm font-semibold text-foreground">Avg Duration by Workflow</h2>
 
 	{#if sorted.length === 0}
 		<div class="flex items-center justify-center h-32 text-muted-foreground text-sm">

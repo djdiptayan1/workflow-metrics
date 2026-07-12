@@ -27,7 +27,7 @@
 
 <div class="bg-card border-border overflow-hidden rounded-xl border">
 	<div class="border-border flex flex-wrap items-center justify-between gap-3 border-b p-5">
-		<h3 class="text-foreground text-sm font-semibold">Recent Runs</h3>
+		<h2 class="text-foreground text-sm font-semibold">Recent Runs</h2>
 		{#if runs.length > 0}
 			<div class="flex flex-wrap items-center gap-3">
 				<span class="text-muted-foreground text-xs">Show</span>
@@ -58,6 +58,7 @@
 			No recent runs
 		</div>
 	{:else}
+		<p class="text-muted-foreground px-5 pt-2 pb-1 text-xs sm:hidden">Swipe to see more columns →</p>
 		<div class="overflow-x-auto">
 			<table class="w-full text-sm">
 				<thead>

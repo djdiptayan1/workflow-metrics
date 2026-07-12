@@ -183,7 +183,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			.single(),
 		locals.supabase
 			.from('repositories')
-			.select('id, full_name, owner, name, is_private, is_active')
+			.select('id, full_name, owner, name, is_private, is_active, github_repo_id')
 			.eq('user_id', user.id)
 			.order('full_name'),
 		locals.supabase
@@ -195,14 +195,34 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			.order('account_login')
 	]);
 
+	const repos = reposResult.data ?? [];
+	const activeGithubRepoIds = repos.filter((r) => r.is_active).map((r) => r.github_repo_id);
+	// Batched here instead of one client-side fetch per repo (see workflow-preferences GET's no-owner/repo branch).
+	const workflowModes: Record<string, 'personal' | 'shared'> = {};
+	if (activeGithubRepoIds.length > 0) {
+		const { data: settingsRows } = await locals.supabase
+			.from('repository_workflow_settings')
+			.select('github_repo_id, preferences_mode')
+			.in('github_repo_id', activeGithubRepoIds);
+		const modeByGithubRepoId = new Map(
+			(settingsRows ?? []).map((row) => [row.github_repo_id, row.preferences_mode])
+		);
+		for (const repo of repos) {
+			workflowModes[repo.id] = (modeByGithubRepoId.get(repo.github_repo_id) ?? 'personal') as
+				| 'personal'
+				| 'shared';
+		}
+	}
+
 	return {
 		connections: connectionsResult.data ?? [],
 		settings: settingsResult.data,
-		repos: reposResult.data ?? [],
+		repos,
 		installations: installationsResult.data ?? [],
 		hasGitHubApp,
 		appSuccess,
-		appError
+		appError,
+		workflowModes
 	};
 };
 
