@@ -1,150 +1,482 @@
-# Local Setup (Local Supabase, step by step)
+# Workflow Metrics setup and operations runbook
 
-Complete, from-zero instructions for running Workflow Metrics locally against a **local Supabase
-stack** (not a hosted Supabase project). Written to be followed exactly by a human or an AI coding
-agent — every command is copy-pasteable and every value referenced is either a fixed local default
-or explicitly retrieved by an earlier step.
+This is the complete setup guide for a human or an AI coding agent starting from an empty machine.
+Commands are run from the repository root unless a step says otherwise.
 
-If you'd rather use a hosted Supabase project instead of running Supabase locally, use the
-[README's Getting Started section](README.md#getting-started) instead — this doc is specifically
-for the local-Supabase workflow.
+## Choose one setup
 
-## Prerequisites
+| Goal                         | Supabase                 | Application                            | Recommended for                 |
+| ---------------------------- | ------------------------ | -------------------------------------- | ------------------------------- |
+| Fastest working installation | Hosted Supabase          | Published Docker image + bundled Redis | Most users and servers          |
+| Fully local installation     | Local Supabase CLI stack | Published Docker image + bundled Redis | Offline development and testing |
+| Source development           | Hosted or local Supabase | `pnpm dev` + a local Redis container   | Contributors changing code      |
 
-- Node.js >= 24
-- PNPM >= 10
-- Docker Desktop (running) — both the Supabase CLI and this app's optional `docker compose` setup
-  depend on it
-- [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started) (`brew
-install supabase/tap/supabase` on macOS)
-- A GitHub account with permission to create OAuth Apps and GitHub Apps
+The application always needs:
 
-## 1. Clone and install
+- Supabase for authentication, settings, repositories, and preferences.
+- Redis for disposable GitHub run and dashboard caches.
+- A GitHub OAuth App for login and read access to GitHub repositories and Actions.
+- A GitHub App only if users need **Optimize with AI → Apply as PR**.
+- An AI provider key only if users need AI analysis or optimization.
+
+## Security rules
+
+- Never commit `.env`, `supabase/.env`, Supabase secret keys, OAuth client secrets, GitHub App
+  private keys, or AI provider keys.
+- `PUBLIC_SUPABASE_ANON_KEY` is a historical variable name. Put the current Supabase
+  **publishable** key in it. This key is expected to be visible to the browser.
+- `SUPABASE_SERVICE_ROLE_KEY` is also a historical variable name. Put the current Supabase
+  **secret** key in it. It bypasses Row Level Security and must remain server-only.
+- Legacy Supabase `anon` and `service_role` keys also work, but new hosted projects should prefer
+  `sb_publishable_...` and `sb_secret_...` keys.
+- Keep the root `.env` file readable only by the deployment user:
+
+  ```bash
+  chmod 600 .env
+  ```
+
+## 1. Prerequisites
+
+All installations need:
+
+- Git
+- [Docker Desktop](https://docs.docker.com/desktop/), Docker Engine with Compose v2, or another
+  Docker-compatible runtime
+- A GitHub account
+
+Fully local Supabase also needs the
+[Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started).
+The complete local Supabase stack recommends at least 7 GB of memory available to Docker.
+
+Source development also needs:
+
+- [Node.js 24](https://nodejs.org/en/download)
+- pnpm 10
+
+On macOS, install the Supabase CLI with Homebrew:
 
 ```bash
-git clone https://github.com/timoa/workflow-metrics.git
+brew install supabase/tap/supabase
+```
+
+For Windows, Linux, or a project-scoped npm installation, follow the linked Supabase CLI guide.
+Do not use `npm install -g supabase`; the npm distribution is intended to be a project dependency.
+
+For source development, enable the pnpm version used by the Docker build:
+
+```bash
+corepack enable
+corepack prepare pnpm@10.30.2 --activate
+```
+
+Verify what you installed:
+
+```bash
+git --version
+docker --version
+docker compose version
+```
+
+For local Supabase or hosted database migrations:
+
+```bash
+supabase --version
+```
+
+For source development:
+
+```bash
+node --version
+pnpm --version
+```
+
+Docker must be running before continuing.
+
+## 2. Clone the repository
+
+```bash
+git clone https://github.com/djdiptayan1/workflow-metrics.git
 cd workflow-metrics
-pnpm install
 ```
 
-## 2. Start local Supabase
+Do not run `pnpm install` when using only the published Docker image.
+
+## 3. Set up Supabase
+
+Choose exactly one path: hosted Supabase or local Supabase.
+
+### Path A: hosted Supabase (recommended)
+
+#### A1. Create the project
+
+1. Open [Supabase Dashboard](https://supabase.com/dashboard).
+2. Select an organization and click **New project**.
+3. Choose a project name, database password, and a region close to the application server.
+4. Save the database password in a password manager. The CLI asks for it when linking.
+5. Wait until the project reports healthy.
+6. Copy the project reference from the dashboard URL:
+   `https://supabase.com/dashboard/project/<project-ref>`.
+
+#### A2. Apply this repository's database migrations
+
+Do not create the tables manually in the Table Editor. The migrations include the required tables,
+indexes, constraints, grants, and Row Level Security policies.
 
 ```bash
-supabase start
+supabase login
+supabase link --project-ref <project-ref>
+supabase db push
+supabase migration list
 ```
 
-This boots Postgres, Auth, Storage, Realtime, Kong, and Studio in Docker containers, and applies
-every migration in `supabase/migrations/` automatically.
+Expected result: every migration under `supabase/migrations/` appears applied to the linked remote
+project. Run `supabase db push` only from a trusted checkout because it changes the linked database.
 
-When it finishes, print the local connection details:
+#### A3. Get the project URL and API keys
 
-```bash
-supabase status
-```
+1. Open the project in Supabase Dashboard.
+2. Use the **Connect** dialog, or open **Settings → API Keys**.
+3. Copy the project URL, normally `https://<project-ref>.supabase.co`.
+4. Copy a **Publishable key** (`sb_publishable_...`).
+5. Copy a **Secret key** (`sb_secret_...`). Create one if the project does not have one.
 
-Keep this output handy — you'll copy values from it into `.env` in step 5. The relevant ones:
+Map the values to the application's variables:
 
-| `supabase status` key | Fixed local value                                                        |
-| --------------------- | ------------------------------------------------------------------------ |
-| `API_URL`             | `http://127.0.0.1:54321`                                                 |
-| `ANON_KEY`            | (long JWT, starts with `eyJ...`, role `anon`)                            |
-| `SERVICE_ROLE_KEY`    | (long JWT, starts with `eyJ...`, role `service_role`)                    |
-| `STUDIO_URL`          | `http://127.0.0.1:54323` — local dashboard, useful for inspecting tables |
+| Supabase value                           | Application variable        |
+| ---------------------------------------- | --------------------------- |
+| Project URL                              | `PUBLIC_SUPABASE_URL`       |
+| Publishable key, or legacy `anon` key    | `PUBLIC_SUPABASE_ANON_KEY`  |
+| Secret key, or legacy `service_role` key | `SUPABASE_SERVICE_ROLE_KEY` |
 
-If some services (e.g. `pooler`, `imgproxy`) show as stopped, that's normal — this app doesn't use
-them. Only `db`, `auth`, `rest`, `kong`, `storage`, `realtime` need to be healthy:
+Do not put the secret key in a browser, screenshot, issue, chat message, or Git repository.
 
-```bash
-docker ps --filter "name=supabase" --format "table {{.Names}}\t{{.Status}}"
-```
+#### A4. Configure the application URLs in Supabase Auth
 
-## 3. Create a GitHub OAuth App (for login)
+Open **Authentication → URL Configuration**.
 
-This is a GitHub **OAuth App**, not a GitHub App (that's step 4).
+For a localhost installation:
 
-1. Go to [GitHub → Settings → Developer settings → OAuth Apps → New OAuth
-   App](https://github.com/settings/applications/new).
-2. **Homepage URL**: `http://localhost:5173`
-3. **Authorization callback URL** — must point at your **local Supabase's** auth callback, not the
-   app itself:
-   ```
-   http://127.0.0.1:54321/auth/v1/callback
-   ```
-4. Create the app, then copy the **Client ID** and generate/copy a **Client secret**.
-5. Configure the local Supabase Auth server with these values. Open
-   `supabase/config.toml` and confirm/set:
-   ```toml
-   [auth.external.github]
-   enabled = true
-   client_id = "env(SUPABASE_AUTH_GITHUB_CLIENT_ID)"
-   secret = "env(SUPABASE_AUTH_GITHUB_SECRET)"
-   ```
-   Then export the values before (re)starting Supabase, e.g. in `supabase/.env` (gitignored):
-   ```env
-   SUPABASE_AUTH_GITHUB_CLIENT_ID=your-oauth-client-id
-   SUPABASE_AUTH_GITHUB_SECRET=your-oauth-client-secret
-   ```
-   Restart so the config takes effect:
-   ```bash
-   supabase stop && supabase start
-   ```
+- **Site URL:** `http://localhost:5173`
+- **Redirect URL:** `http://localhost:5173/auth/callback`
 
-## 4. Create a GitHub App (for "Apply as PR")
+For a production installation at `https://metrics.example.com`:
 
-Separate from the OAuth App above — this one lets the app push AI optimization suggestions as a
-pull request.
+- **Site URL:** `https://metrics.example.com`
+- **Redirect URL:** `https://metrics.example.com/auth/callback`
 
-1. Go to [GitHub → Settings → Developer settings → GitHub Apps → New GitHub
-   App](https://github.com/settings/apps/new).
-2. Fill in:
-   - **GitHub App name**: e.g. `workflow-metrics-bot-dev`
-   - **Homepage URL**: `http://localhost:5173`
-   - **Callback URL**: `http://localhost:5173/auth/github-app/callback`
-   - **Webhook**: uncheck **Active** (not needed)
-3. **Repository permissions**:
-   - **Contents**: Read & Write
-   - **Pull requests**: Read & Write
-   - **Workflows**: Read & Write
-   - **Actions**: Read
-4. Create the app. On its settings page, note:
-   - **App ID** → `GITHUB_APP_ID`
-   - **App slug** from the URL (`github.com/apps/<slug>`) → `GITHUB_APP_SLUG`
-5. Scroll to **Private keys** → **Generate a private key** (downloads a `.pem`). Collapse it to a
-   single-line secret:
-   ```bash
-   awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' your-app.pem
-   ```
-   Use the output as `GITHUB_APP_PRIVATE_KEY`.
+If the same Supabase project is used for local development and production, keep the production Site
+URL and add both exact callback URLs to the redirect allow list.
 
-## 5. Configure `.env`
+#### A5. Create the GitHub OAuth App used for login
+
+This must be a GitHub **OAuth App**, not the optional GitHub App described later.
+
+1. In Supabase, open **Authentication → Sign In / Providers → GitHub**.
+2. Copy the callback URL shown there. It normally is:
+   `https://<project-ref>.supabase.co/auth/v1/callback`.
+3. Open [GitHub's New OAuth App page](https://github.com/settings/applications/new).
+4. Enter:
+   - **Application name:** a recognizable name such as `Workflow Metrics`.
+   - **Homepage URL:** `http://localhost:5173` locally, or the public HTTPS application URL.
+   - **Authorization callback URL:** the Supabase callback URL copied in step 2.
+   - **Enable Device Flow:** off.
+5. Register the application.
+6. Copy the **Client ID**.
+7. Click **Generate a new client secret** and copy the secret immediately.
+8. Return to **Supabase → Authentication → Sign In / Providers → GitHub**.
+9. Enable GitHub, paste the Client ID and Client secret, and save.
+
+The OAuth client secret belongs in Supabase, not in the application's root `.env` file.
+
+#### A6. Create the root `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Fill in with the **local** Supabase values from `supabase status` (step 2) and the GitHub App
-values from step 4:
+For localhost with hosted Supabase, use:
+
+```env
+PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
+PUBLIC_SUPABASE_ANON_KEY=sb_publishable_...
+SUPABASE_SERVICE_ROLE_KEY=sb_secret_...
+
+# Used only by direct pnpm/Node runs. Compose replaces it with redis://redis:6379.
+REDIS_URL=redis://127.0.0.1:6379
+
+# Leave these commented on localhost.
+# PUBLIC_APP_URL=https://metrics.example.com
+# ORIGIN=https://metrics.example.com
+```
+
+For production, also set both public URL variables to the externally reachable HTTPS origin:
+
+```env
+PUBLIC_APP_URL=https://metrics.example.com
+ORIGIN=https://metrics.example.com
+```
+
+Do not add `SUPABASE_INTERNAL_URL` when using hosted Supabase.
+
+Continue at [Start with Docker Compose](#4-start-with-docker-compose).
+
+### Path B: fully local Supabase
+
+The repository already contains `supabase/config.toml` and all migrations. Do not run
+`supabase init`.
+
+#### B1. Create a separate local GitHub OAuth App
+
+GitHub OAuth Apps accept only one callback URL, so use a separate OAuth App when you also have a
+hosted Supabase project.
+
+1. Open [GitHub's New OAuth App page](https://github.com/settings/applications/new).
+2. Enter:
+   - **Application name:** `Workflow Metrics Local` or another unique name.
+   - **Homepage URL:** `http://localhost:5173`.
+   - **Authorization callback URL:** `http://127.0.0.1:54321/auth/v1/callback`.
+   - **Enable Device Flow:** off.
+3. Register the application.
+4. Copy the Client ID and generate a Client secret.
+
+#### B2. Configure local Supabase's GitHub provider
+
+Create `supabase/.env` with the exact names referenced by `supabase/config.toml`:
+
+```env
+GITHUB_OAUTH_CLIENT_ID=<GitHub OAuth App Client ID>
+GITHUB_OAUTH_CLIENT_SECRET=<GitHub OAuth App Client secret>
+```
+
+Protect it:
+
+```bash
+chmod 600 supabase/.env
+```
+
+Do not rename these to `SUPABASE_AUTH_GITHUB_*`; those names are not used by this repository.
+
+The Supabase CLI normally auto-loads the root `.env`. This guide keeps provider credentials in a
+separate file so Compose does not pass the GitHub OAuth secret into the application container.
+
+#### B3. Start local Supabase
+
+Export the provider credentials into the current shell, then start Supabase:
+
+```bash
+set -a
+. supabase/.env
+set +a
+supabase start
+supabase status
+```
+
+The first start downloads several Docker images. It also applies every migration under
+`supabase/migrations/` and the local seed file.
+
+Copy these values from `supabase status` without sharing them:
+
+| Status value                 | Typical local value           | Application variable        |
+| ---------------------------- | ----------------------------- | --------------------------- |
+| API URL                      | `http://127.0.0.1:54321`      | `PUBLIC_SUPABASE_URL`       |
+| Publishable or `anon` key    | `sb_publishable_...` or a JWT | `PUBLIC_SUPABASE_ANON_KEY`  |
+| Secret or `service_role` key | `sb_secret_...` or a JWT      | `SUPABASE_SERVICE_ROLE_KEY` |
+| Studio URL                   | `http://127.0.0.1:54323`      | Not an environment variable |
+
+If the OAuth App was added after Supabase was already running, restart the local stack:
+
+```bash
+supabase stop
+set -a
+. supabase/.env
+set +a
+supabase start
+```
+
+#### B4. Create the root `.env`
+
+```bash
+cp .env.example .env
+```
+
+Use the values printed by `supabase status`:
 
 ```env
 PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
-PUBLIC_SUPABASE_ANON_KEY=<ANON_KEY from supabase status>
-SUPABASE_SERVICE_ROLE_KEY=<SERVICE_ROLE_KEY from supabase status>
+PUBLIC_SUPABASE_ANON_KEY=<local Publishable or ANON key>
+SUPABASE_SERVICE_ROLE_KEY=<local Secret or SERVICE_ROLE key>
+
+# The app container reaches services on the host through this address.
+SUPABASE_INTERNAL_URL=http://host.docker.internal:54321
+
+# Used only by direct pnpm/Node runs. Compose replaces it with redis://redis:6379.
 REDIS_URL=redis://127.0.0.1:6379
 
-GITHUB_APP_ID=<from step 4>
-GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
-GITHUB_APP_SLUG=<from step 4>
+# Leave these commented on localhost.
+# PUBLIC_APP_URL=https://metrics.example.com
+# ORIGIN=https://metrics.example.com
 ```
 
-Leave `PUBLIC_APP_URL` commented out — local dev uses the request origin automatically.
+Why there are two Supabase URLs:
 
-## 6. Run the app
+- The browser needs `PUBLIC_SUPABASE_URL=http://127.0.0.1:54321`.
+- Inside the app container, `127.0.0.1` means the app container itself, so server requests use
+  `SUPABASE_INTERNAL_URL=http://host.docker.internal:54321`.
 
-You have two options. Prefer option A unless you specifically need to run inside Docker.
+## 4. Start with Docker Compose
 
-### Option A — direct (simplest, no networking gotchas)
+Compose reads the root `.env` automatically and also passes it to the application container using
+`env_file`. You do not need individual `-e` flags.
 
-Start a loopback-only Redis 8 container and keep `REDIS_URL=redis://127.0.0.1:6379` in `.env`:
+The application image is `djdiptayan/workflow-metrics:latest`. Redis runs only on Compose's
+internal network; port 6379 is not published to the host.
+
+### First start using the published image
+
+```bash
+docker compose pull
+docker compose up -d --no-build
+docker compose ps
+```
+
+Expected state: both `ci-observe` and `redis` show `healthy`.
+
+Check the application health endpoint:
+
+```bash
+curl --fail http://localhost:5173/api/health
+```
+
+Expected response:
+
+```json
+{ "status": "ok" }
+```
+
+Open [http://localhost:5173](http://localhost:5173), click **Sign in with GitHub**, authorize the
+requested `repo` and `read:org` scopes, then select repositories during onboarding.
+
+### View logs
+
+```bash
+docker compose logs -f --tail=100 ci-observe
+```
+
+Press `Ctrl+C` to stop following logs; the containers keep running.
+
+### Stop or restart
+
+```bash
+docker compose stop
+docker compose start
+```
+
+To remove the containers while preserving the Redis cache volume:
+
+```bash
+docker compose down
+```
+
+Use `docker compose down -v` only when intentionally deleting the disposable Redis cache and
+forcing a cold GitHub import.
+
+## 5. Optional GitHub App for Apply as PR
+
+Skip this section if users only need dashboards, logs, metrics, and AI suggestions. The OAuth App
+from the Supabase setup is enough for those features.
+
+Workflow Metrics uses this GitHub App only to create a branch, update workflow YAML, and open a pull
+request with an AI-generated optimization.
+
+### C1. Register the GitHub App
+
+1. Open [GitHub's New GitHub App page](https://github.com/settings/apps/new).
+2. Enter a unique **GitHub App name**.
+3. Set **Homepage URL** to the application URL.
+4. Leave **Callback URL** empty. This app does not request GitHub user-access tokens.
+5. Leave **Request user authorization (OAuth) during installation** off.
+6. Set **Setup URL** to:
+   - Local: `http://localhost:5173/auth/github-app/callback`
+   - Production: `https://metrics.example.com/auth/github-app/callback`
+7. Enable **Redirect on update**.
+8. Disable the webhook by clearing **Active**. This application does not consume GitHub webhooks.
+9. Set only these repository permissions:
+   - **Contents:** Read & write
+   - **Pull requests:** Read & write
+   - **Workflows:** Read & write
+10. Choose installation visibility:
+    - **Only on this account** for a private single-account deployment.
+    - **Any account** when other users or organizations must install it.
+11. Create the GitHub App.
+
+### C2. Get the GitHub App credentials
+
+On the GitHub App settings page:
+
+1. Copy **App ID** → `GITHUB_APP_ID`.
+2. Copy the slug from `github.com/apps/<slug>` → `GITHUB_APP_SLUG`.
+3. Under **Private keys**, click **Generate a private key** and save the downloaded `.pem` securely.
+4. Convert the PEM into one line containing literal `\n` separators:
+
+   ```bash
+   awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' /path/to/github-app.pem
+   ```
+
+5. Add the values to the root `.env`:
+
+   ```env
+   GITHUB_APP_ID=<numeric App ID>
+   GITHUB_APP_SLUG=<github-app-slug>
+   GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
+   ```
+
+6. Recreate the app container so it receives the new environment:
+
+   ```bash
+   docker compose up -d --no-build --force-recreate ci-observe
+   ```
+
+7. Sign in to Workflow Metrics, open **Settings**, click the GitHub App installation action, choose
+   the repositories, and return to Settings. Use **Sync installations** if the automatic return was
+   interrupted.
+
+Never commit the PEM file or its contents. Delete or rotate the GitHub private key immediately if it
+is exposed.
+
+## 6. Optional AI provider key
+
+AI features do not need a server environment variable. Each signed-in user configures a provider
+key in **Settings → AI Provider**.
+
+Create a key from the provider's official console:
+
+- [OpenAI API keys](https://platform.openai.com/api-keys)
+- [Google AI Studio / Gemini API keys](https://aistudio.google.com/app/apikey)
+- [Mistral Studio API keys](https://console.mistral.ai/api-keys)
+
+Then:
+
+1. Open Workflow Metrics **Settings**.
+2. Select OpenAI, Google Gemini, or Mistral AI.
+3. Paste the provider key.
+4. Load/select an available model.
+5. Save settings.
+
+The key is stored in the signed-in user's `user_settings` row and protected by that table's Row
+Level Security policy. Treat the database and its backups as secret-bearing infrastructure.
+
+`AI_OPTIMIZATION_MODEL` is an optional server-side default-model override. Most installations do
+not need it.
+
+## 7. Source development instead of the published image
+
+Install dependencies:
+
+```bash
+pnpm install --frozen-lockfile
+```
+
+Start a loopback-only Redis container:
 
 ```bash
 docker run -d --name workflow-metrics-redis \
@@ -152,68 +484,187 @@ docker run -d --name workflow-metrics-redis \
   redis:8-alpine redis-server --maxmemory 384mb --maxmemory-policy allkeys-lru
 ```
 
+Keep `REDIS_URL=redis://127.0.0.1:6379` in the root `.env`, then run:
+
 ```bash
 pnpm dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) and sign in with GitHub.
-Stop the standalone Redis container later with `docker rm -f workflow-metrics-redis`.
-
-### Option B — Docker Compose
-
-For local Supabase, keep `PUBLIC_SUPABASE_URL=http://127.0.0.1:54321` for the browser and set
-`SUPABASE_INTERNAL_URL=http://host.docker.internal:54321` for the app container. Hosted Supabase
-URLs need no internal override.
+For a local application image built from the checkout:
 
 ```bash
-CI_OBSERVE_IMAGE=workflow-metrics:local docker compose up -d --build
+CI_OBSERVE_IMAGE=workflow-metrics:local docker compose build ci-observe
+CI_OBSERVE_IMAGE=workflow-metrics:local docker compose up -d --no-build
+```
+
+Before committing application changes:
+
+```bash
+pnpm test
+pnpm check
+pnpm lint
+pnpm build
+```
+
+## 8. Environment variable reference
+
+| Variable                    | Required                     | Source and purpose                                                       |
+| --------------------------- | ---------------------------- | ------------------------------------------------------------------------ |
+| `PUBLIC_SUPABASE_URL`       | Yes                          | Supabase project API URL; browser-visible                                |
+| `PUBLIC_SUPABASE_ANON_KEY`  | Yes                          | Supabase publishable key or legacy `anon` key; browser-visible           |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes                          | Supabase secret key or legacy `service_role`; server-only                |
+| `SUPABASE_INTERNAL_URL`     | Local Supabase + Docker only | Container-reachable Supabase API URL                                     |
+| `REDIS_URL`                 | Yes for direct runs          | Compose overrides it with `redis://redis:6379`                           |
+| `PUBLIC_APP_URL`            | Production only              | Public HTTPS application origin used for OAuth return URLs               |
+| `ORIGIN`                    | Production only              | Adapter Node origin; normally the same as `PUBLIC_APP_URL`               |
+| `GITHUB_APP_ID`             | Apply as PR only             | Numeric GitHub App ID                                                    |
+| `GITHUB_APP_PRIVATE_KEY`    | Apply as PR only             | GitHub App PEM stored as a single-line secret                            |
+| `GITHUB_APP_SLUG`           | Apply as PR only             | Slug from the GitHub App URL                                             |
+| `AI_OPTIMIZATION_MODEL`     | No                           | Optional default AI model override                                       |
+| `CI_OBSERVE_IMAGE`          | No                           | Compose image override; defaults to `djdiptayan/workflow-metrics:latest` |
+
+The GitHub OAuth Client ID and Client secret are deliberately absent from this table:
+
+- Hosted Supabase stores them in **Authentication → Sign In / Providers → GitHub**.
+- Local Supabase reads them from the shell as `GITHUB_OAUTH_CLIENT_ID` and
+  `GITHUB_OAUTH_CLIENT_SECRET`; this runbook stores and sources them from `supabase/.env`.
+
+## 9. Updating an installation
+
+Pull the latest Compose and documentation changes, then pull and recreate the containers:
+
+```bash
+git pull --ff-only
+docker compose pull
+docker compose up -d --no-build
 docker compose ps
 ```
 
-Open [http://localhost:5173](http://localhost:5173).
+The named Redis volume survives container recreation. Returning to the dashboard reads cached data
+unless the configured freshness interval has expired.
 
-**Why this needs an extra step:** the app runs inside a container, but local Supabase runs on your
-host machine (accessible to containers as `host.docker.internal`, not `127.0.0.1` — inside a
-container, `127.0.0.1` means the container itself).
-
-## Troubleshooting
-
-**`[TypeError: fetch failed] ... ECONNREFUSED 127.0.0.1:54321` in `docker compose` logs**
-The container is trying to reach Supabase at `127.0.0.1`, which inside a container refers to
-itself. Confirm `.env` keeps `PUBLIC_SUPABASE_URL=http://127.0.0.1:54321`, adds
-`SUPABASE_INTERNAL_URL=http://host.docker.internal:54321`, and that `supabase status` shows
-Supabase running.
-
-**Sign-in redirects to GitHub but then fails / redirect_uri mismatch**
-The OAuth App's callback URL must be your local Supabase's callback
-(`http://127.0.0.1:54321/auth/v1/callback`), **not** `http://localhost:5173/...`. Only the GitHub
-App (step 4) uses the `localhost:5173` callback.
-
-**Migrations seem out of date after pulling latest `main`**
+After changing any root `.env` value, recreate the application container:
 
 ```bash
-supabase stop
-supabase start
+docker compose up -d --no-build --force-recreate ci-observe
 ```
 
-`supabase start` re-applies all migrations under `supabase/migrations/` from scratch each time the
-local stack is (re)created.
+## 10. Verification checklist
 
-**Force a completely cold workflow-run import**
+1. `docker compose ps` reports both services healthy.
+2. `curl --fail http://localhost:5173/api/health` returns `{"status":"ok"}`.
+3. GitHub login returns to `/auth/callback`, then onboarding or the dashboard.
+4. A new row appears in Supabase `github_connections` after first login.
+5. Onboarding lists repositories the GitHub user can access.
+6. Opening a repository dashboard starts or reads the Redis-backed GitHub run cache.
+7. Dashboard → Settings → Dashboard does not repaginate all GitHub workflow runs while the cache is
+   fresh.
+8. If configured, the GitHub App appears in Settings and **Apply as PR** can create a pull request in
+   an installed repository.
+
+For local Supabase, inspect data at [http://127.0.0.1:54323](http://127.0.0.1:54323).
+
+## 11. Troubleshooting
+
+### Login returns to `/auth/login`
+
+Check all three URL layers:
+
+1. GitHub OAuth App callback is the Supabase Auth callback, not the Workflow Metrics callback.
+2. Supabase GitHub provider contains the same OAuth Client ID and Client secret.
+3. Supabase Auth redirect allow list contains the exact Workflow Metrics callback:
+   `http://localhost:5173/auth/callback` or `https://your-domain/auth/callback`.
+
+Then inspect:
+
+```bash
+docker compose logs --tail=200 ci-observe
+```
+
+### `Invalid API key` after `.env` was corrected
+
+The running container may still contain the previous value. Recreate it:
+
+```bash
+docker compose up -d --no-build --force-recreate ci-observe
+```
+
+Do not print complete keys in logs while debugging.
+
+### Local Supabase fails with `ECONNREFUSED 127.0.0.1:54321`
+
+When the app runs in Compose, confirm the root `.env` contains both:
+
+```env
+PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
+SUPABASE_INTERNAL_URL=http://host.docker.internal:54321
+```
+
+Also confirm `supabase status` reports the local stack running.
+
+### OAuth provider reports a callback mismatch
+
+- Hosted Supabase callback: `https://<project-ref>.supabase.co/auth/v1/callback`
+- This repository's local Supabase callback: `http://127.0.0.1:54321/auth/v1/callback`
+- Workflow Metrics callback allowed by Supabase: `http://localhost:5173/auth/callback`
+
+These URLs serve different hops and are not interchangeable.
+
+### Private or organization repositories are missing
+
+The login flow requests GitHub's `repo` and `read:org` scopes. Check whether the organization
+requires an administrator to approve the OAuth App or requires SAML SSO authorization. If scopes
+were denied, revoke the OAuth App under GitHub **Settings → Applications → Authorized OAuth Apps**
+and sign in again.
+
+### Redis or dashboard API returns `503`
+
+```bash
+docker compose ps
+docker compose logs --tail=200 redis
+docker compose restart redis
+```
+
+Redis is required. The application intentionally does not start an unbounded GitHub import when
+Redis is unavailable.
+
+### GitHub App installation or Apply as PR fails
+
+Confirm:
+
+- `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_APP_SLUG` are set in the running container.
+- The GitHub App uses the **Setup URL**, not Callback URL.
+- Contents, Pull requests, and Workflows permissions are all Read & write.
+- The app is installed on the target repository.
+- Updated permissions were approved on existing installations.
+
+### Migrations are missing locally
+
+Resetting deletes local database data and reapplies migrations:
+
+```bash
+supabase db reset
+```
+
+Do not run `supabase db reset --linked` against production.
+
+### Force a completely cold GitHub cache import
 
 ```bash
 docker compose down -v
-CI_OBSERVE_IMAGE=workflow-metrics:local docker compose up -d --build
+docker compose up -d --no-build
 ```
 
-This deletes the disposable Redis cache. Normal `docker compose down` keeps it, so restarting or
-recreating the app does not require importing all workflow runs again.
+This deletes only the Compose Redis volume. It does not delete hosted Supabase data.
 
-## Verifying the setup works
+## Official references
 
-1. `supabase status` shows `db`, `auth`, `rest`, `kong` healthy.
-2. `pnpm dev` (or the local-image Compose command above) starts without fetch errors in the console.
-3. Visiting `http://localhost:5173` and clicking "Sign in with GitHub" redirects to GitHub, then
-   back to the app, landing on the dashboard.
-4. Open [http://127.0.0.1:54323](http://127.0.0.1:54323) (Supabase Studio) and confirm a row
-   appears in `github_connections` after sign-in.
+- [Supabase local development](https://supabase.com/docs/guides/local-development)
+- [Supabase API keys](https://supabase.com/docs/guides/getting-started/api-keys)
+- [Supabase GitHub login](https://supabase.com/docs/guides/auth/social-login/auth-github)
+- [Supabase database migrations](https://supabase.com/docs/guides/deployment/database-migrations)
+- [GitHub OAuth App registration](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app)
+- [GitHub App registration](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app)
+- [GitHub App permissions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app)
+- [GitHub App private keys](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps)
+- [Docker Compose environment variables](https://docs.docker.com/compose/how-tos/environment-variables/set-environment-variables/)
