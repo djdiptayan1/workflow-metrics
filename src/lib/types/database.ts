@@ -36,6 +36,7 @@ export interface Database {
 					scopes?: string[] | null;
 					updated_at?: string;
 				};
+				Relationships: [];
 			};
 			repositories: {
 				Row: {
@@ -66,6 +67,7 @@ export interface Database {
 					id?: string;
 					is_active?: boolean;
 				};
+				Relationships: [];
 			};
 			user_settings: {
 				Row: {
@@ -107,6 +109,7 @@ export interface Database {
 					dashboard_refresh_interval?: 'realtime' | '5' | '10' | '15';
 					updated_at?: string;
 				};
+				Relationships: [];
 			};
 			dora_workflows: {
 				Row: {
@@ -131,6 +134,7 @@ export interface Database {
 					workflow_name?: string;
 					workflow_path?: string;
 				};
+				Relationships: [];
 			};
 			repository_workflow_settings: {
 				Row: { github_repo_id: number; preferences_mode: 'personal' | 'shared'; updated_by: string | null; updated_at: string };
@@ -148,5 +152,6 @@ export interface Database {
 		Views: Record<string, never>;
 		Functions: Record<string, never>;
 		Enums: Record<string, never>;
+		CompositeTypes: Record<string, never>;
 	};
 }

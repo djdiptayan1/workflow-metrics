@@ -88,15 +88,12 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 	} | null;
 	if (!body?.owner || !body.repo) throw error(400, 'owner and repo are required');
 	const { user, githubRepoId } = await context(locals, body.owner, body.repo);
-	// The local database type file predates these migration tables. Keep the compatibility
-	// boundary server-only; all input and repository authorization remains explicit below.
-	const userDb = locals.supabase as unknown as { from: (table: string) => any };
 	if (body.mode) {
 		if (body.mode !== 'personal' && body.mode !== 'shared')
 			throw error(400, 'Invalid preferences mode');
 		await requireAdmin(locals, user.id, body.owner, body.repo);
 		// RLS-scoped write: any user tracking the repo may write here, admin-ness was just verified above.
-		const { error: dbError } = await userDb
+		const { error: dbError } = await locals.supabase
 			.from('repository_workflow_settings')
 			.upsert(
 				{ github_repo_id: githubRepoId, preferences_mode: body.mode, updated_by: user.id },
@@ -105,14 +102,16 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 		if (dbError) throw error(500, 'Failed to update workflow preference mode');
 		return json({ mode: body.mode });
 	}
+	const { workflowId, isPinned, environment } = body;
 	if (
-		!Number.isSafeInteger(body.workflowId) ||
-		body.workflowId! <= 0 ||
-		typeof body.isPinned !== 'boolean' ||
-		!body.environment
+		typeof workflowId !== 'number' ||
+		!Number.isSafeInteger(workflowId) ||
+		workflowId <= 0 ||
+		typeof isPinned !== 'boolean' ||
+		!environment
 	)
 		throw error(400, 'Invalid workflow preference');
-	const { data: setting } = await userDb
+	const { data: setting } = await locals.supabase
 		.from('repository_workflow_settings')
 		.select('preferences_mode')
 		.eq('github_repo_id', githubRepoId)
@@ -123,37 +122,32 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 		await requireAdmin(locals, user.id, body.owner, body.repo);
 		const admin = createSupabaseAdminClient();
 		if (!admin) throw error(503, 'Shared workflow preferences require SUPABASE_SERVICE_ROLE_KEY');
-		const adminDb = admin as unknown as { from: (table: string) => any };
-		const { error: dbError } = await adminDb
-			.from('workflow_preferences')
-			.upsert(
-				{
-					github_repo_id: githubRepoId,
-					user_id: null,
-					workflow_id: body.workflowId,
-					is_pinned: body.isPinned,
-					environment: body.environment,
-					updated_by: user.id
-				},
-				{ onConflict: 'github_repo_id,user_id,workflow_id' }
-			);
-		if (dbError) throw error(500, 'Failed to update workflow preference');
-		return json({ mode });
-	}
-	// Personal mode: RLS-scoped write against the user's own row.
-	const { error: dbError } = await userDb
-		.from('workflow_preferences')
-		.upsert(
+		const { error: dbError } = await admin.from('workflow_preferences').upsert(
 			{
 				github_repo_id: githubRepoId,
-				user_id: user.id,
-				workflow_id: body.workflowId,
-				is_pinned: body.isPinned,
-				environment: body.environment,
+				user_id: null,
+				workflow_id: workflowId,
+				is_pinned: isPinned,
+				environment,
 				updated_by: user.id
 			},
 			{ onConflict: 'github_repo_id,user_id,workflow_id' }
 		);
+		if (dbError) throw error(500, 'Failed to update workflow preference');
+		return json({ mode });
+	}
+	// Personal mode: RLS-scoped write against the user's own row.
+	const { error: dbError } = await locals.supabase.from('workflow_preferences').upsert(
+		{
+			github_repo_id: githubRepoId,
+			user_id: user.id,
+			workflow_id: workflowId,
+			is_pinned: isPinned,
+			environment,
+			updated_by: user.id
+		},
+		{ onConflict: 'github_repo_id,user_id,workflow_id' }
+	);
 	if (dbError) throw error(500, 'Failed to update workflow preference');
 	return json({ mode });
 };

@@ -62,13 +62,14 @@ cp .env.example .env
 
 Required environment variables:
 
-| Variable | Description |
-|---|---|
-| `PUBLIC_SUPABASE_URL` | Your Supabase project URL |
-| `PUBLIC_SUPABASE_ANON_KEY` | Your Supabase anon key |
-| `GITHUB_APP_ID` | GitHub App ID (for server-side API calls) |
-| `GITHUB_APP_PRIVATE_KEY` | GitHub App private key |
-| `MISTRAL_API_KEY` | Mistral API key (for AI optimization features) |
+| Variable                   | Description                                    |
+| -------------------------- | ---------------------------------------------- |
+| `PUBLIC_SUPABASE_URL`      | Your Supabase project URL                      |
+| `PUBLIC_SUPABASE_ANON_KEY` | Your Supabase anon key                         |
+| `REDIS_URL`                | Required Redis connection URL                  |
+| `GITHUB_APP_ID`            | GitHub App ID (for server-side API calls)      |
+| `GITHUB_APP_PRIVATE_KEY`   | GitHub App private key                         |
+| `MISTRAL_API_KEY`          | Mistral API key (for AI optimization features) |
 
 ## Development
 
@@ -117,14 +118,15 @@ Workflow file: [.github/workflows/pull-request.yml](.github/workflows/pull-reque
 All GitHub Actions workflows use [step-security/harden-runner](https://github.com/step-security/harden-runner) with **egress blocking** to mitigate supply chain attacks. Only explicitly allowed endpoints can be reached.
 
 **What it does:**
+
 - Monitors network egress to detect unauthorized outbound calls
 - Tracks file integrity to detect tampering
 - Monitors process activity for suspicious behavior
 
 **Workflows protected:**
+
 - [.github/workflows/pull-request.yml](.github/workflows/pull-request.yml) — CI checks
 - [.github/workflows/release.yml](.github/workflows/release.yml) — Release automation
-- [.github/workflows/deploy.yml](.github/workflows/deploy.yml) — Cloudflare Pages deployment
 - [.github/workflows/codeql-analysis.yml](.github/workflows/codeql-analysis.yml) — CodeQL static analysis
 - [.github/workflows/scorecard.yml](.github/workflows/scorecard.yml) — OpenSSF Scorecard
 
@@ -138,7 +140,7 @@ Releases are automated with [Semantic Release](https://semantic-release.gitbook.
 
 1. **Test** job runs: lint, unit tests (Vitest), and build.
 2. **Release** job runs only if tests pass: Semantic Release analyzes commits, bumps the version, updates `package.json` and `CHANGELOG.md`, pushes a release commit, and creates a GitHub release.
-3. **Deploy** job runs if a new release was created: builds and deploys to Cloudflare Pages.
+3. Production deployment is managed separately from the release workflow using the Node container image and Redis.
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) so versions and changelog are derived from commit messages:
 
@@ -151,19 +153,10 @@ Workflow: [.github/workflows/release.yml](.github/workflows/release.yml).
 
 ### Deployment
 
-Deployment to [Cloudflare Pages](https://pages.cloudflare.com/) is triggered automatically after a successful release. The build adapter is `@sveltejs/adapter-cloudflare`.
-
-**Required Secrets** (in GitHub repository settings):
-
-| Secret | Description |
-|---|---|
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API token with Pages deploy permissions |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID |
-| `SUPABASE_URL` | Supabase project URL (production) |
-| `SUPABASE_ANON_KEY` | Supabase anon key (production) |
-| `GITHUB_APP_ID` | GitHub App ID (production) |
-| `GITHUB_APP_PRIVATE_KEY` | GitHub App private key (production) |
-| `MISTRAL_API_KEY` | Mistral API key (production) |
+The supported runtime is the production Node container plus Redis.
+`CI_OBSERVE_IMAGE=workflow-metrics:local docker compose up -d --build` starts both services from
+local source; managed environments must provide the same application environment variables and a
+private `REDIS_URL` (use `rediss://` for TLS in production). Releases do not deploy automatically.
 
 ## Stack
 
@@ -174,7 +167,7 @@ Deployment to [Cloudflare Pages](https://pages.cloudflare.com/) is triggered aut
 - **GitHub API**: [@octokit/rest](https://github.com/octokit/rest.js)
 - **AI**: [Vercel AI SDK](https://sdk.vercel.ai/) + [@ai-sdk/mistral](https://sdk.vercel.ai/providers/ai-sdk-providers/mistral)
 - **Graph Visualization**: [@xyflow/svelte](https://svelteflow.dev/)
-- **Deployment**: Cloudflare Pages via [@sveltejs/adapter-cloudflare](https://kit.svelte.dev/docs/adapter-cloudflare) + Wrangler
+- **Deployment**: Node 24 container via `@sveltejs/adapter-node`, backed by Redis 8
 - **Testing**: [Vitest 3](https://vitest.dev/) + v8 coverage + [Codecov](https://codecov.io/)
 - **Linting**: ESLint 9 + `eslint-plugin-svelte` + `typescript-eslint`
 - **Packaging**: PNPM 10

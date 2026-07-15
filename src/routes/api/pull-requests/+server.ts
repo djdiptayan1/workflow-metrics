@@ -1,4 +1,5 @@
 import { error, json } from '@sveltejs/kit';
+import type { Octokit } from '@octokit/rest';
 import { createOctokit, isGitHubUnauthorizedError } from '$lib/server/github';
 import type { GitHubWorkflowRun } from '$lib/types/github';
 import type { RequestHandler } from './$types';
@@ -16,7 +17,59 @@ type PullRequest = {
 	deletions: number | null;
 };
 
-function toPullRequest(pull: Record<string, any>): PullRequest {
+type RestPullRequest = Awaited<ReturnType<Octokit['rest']['pulls']['get']>>['data'];
+
+type PullRequestFilter = 'open' | 'closed' | 'merged';
+
+type PullRequestNode = {
+	number: number;
+	title: string;
+	state: 'OPEN' | 'CLOSED' | 'MERGED';
+	mergedAt: string | null;
+	isDraft: boolean;
+	url: string;
+	author: { login: string; avatarUrl: string | null } | null;
+	headRefOid: string;
+	additions: number;
+	deletions: number;
+};
+
+type PullRequestConnection = {
+	totalCount: number;
+	pageInfo: { endCursor: string | null; hasNextPage: boolean };
+	nodes: PullRequestNode[];
+};
+
+type PullRequestPageResponse = {
+	repository: {
+		selected: PullRequestConnection;
+		open: { totalCount: number };
+		closed: { totalCount: number };
+		merged: { totalCount: number };
+	} | null;
+};
+
+const PAGE_SIZES = new Set([20, 50, 100]);
+const FILTERS = new Set<PullRequestFilter>(['open', 'closed', 'merged']);
+
+export function _parsePullRequestListParams(url: URL): {
+	filter: PullRequestFilter;
+	pageSize: number;
+	cursor: string | null;
+} {
+	const filter = url.searchParams.get('state') ?? 'open';
+	const pageSize = Number(url.searchParams.get('pageSize') ?? '20');
+	const cursor = url.searchParams.get('cursor');
+
+	if (!FILTERS.has(filter as PullRequestFilter))
+		throw error(400, 'state must be open, closed, or merged');
+	if (!PAGE_SIZES.has(pageSize)) throw error(400, 'pageSize must be 20, 50, or 100');
+	if (cursor && cursor.length > 512) throw error(400, 'Invalid pagination cursor');
+
+	return { filter: filter as PullRequestFilter, pageSize, cursor };
+}
+
+function toPullRequest(pull: RestPullRequest): PullRequest {
 	return {
 		number: pull.number,
 		title: pull.title,
@@ -28,6 +81,24 @@ function toPullRequest(pull: Record<string, any>): PullRequest {
 		headSha: pull.head?.sha ?? '',
 		additions: typeof pull.additions === 'number' ? pull.additions : null,
 		deletions: typeof pull.deletions === 'number' ? pull.deletions : null
+	};
+}
+
+function toPullRequestFromNode(pull: PullRequestNode): PullRequest {
+	return {
+		number: pull.number,
+		title: pull.title,
+		state: pull.state === 'OPEN' ? 'open' : 'closed',
+		mergedAt: pull.mergedAt,
+		draft: pull.isDraft,
+		url: pull.url,
+		author: {
+			login: pull.author?.login ?? 'unknown',
+			avatarUrl: pull.author?.avatarUrl ?? null
+		},
+		headSha: pull.headRefOid,
+		additions: pull.additions,
+		deletions: pull.deletions
 	};
 }
 
@@ -65,22 +136,64 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		const octokit = await getRequestContext(locals, owner, repo);
 
 		if (!numberParam) {
-			const { data } = await octokit.rest.pulls.list({
-				owner,
-				repo,
-				state: 'all',
-				sort: 'updated',
-				direction: 'desc',
-				per_page: 100
+			const { filter, pageSize, cursor } = _parsePullRequestListParams(url);
+			const data = await octokit.graphql<PullRequestPageResponse>(
+				`query PullRequestsPage(
+					$owner: String!
+					$repo: String!
+					$state: [PullRequestState!]!
+					$pageSize: Int!
+					$cursor: String
+				) {
+					repository(owner: $owner, name: $repo) {
+						selected: pullRequests(
+							states: $state
+							first: $pageSize
+							after: $cursor
+							orderBy: { field: UPDATED_AT, direction: DESC }
+						) {
+							totalCount
+							pageInfo { endCursor hasNextPage }
+							nodes {
+								number title state mergedAt isDraft url headRefOid additions deletions
+								author { login avatarUrl }
+							}
+						}
+						open: pullRequests(states: OPEN, first: 1) { totalCount }
+						closed: pullRequests(states: CLOSED, first: 1) { totalCount }
+						merged: pullRequests(states: MERGED, first: 1) { totalCount }
+					}
+				}`,
+				{
+					owner,
+					repo,
+					state: [filter.toUpperCase()],
+					pageSize,
+					cursor
+				}
+			);
+			if (!data.repository) throw error(404, 'Repository was not found on GitHub.');
+
+			const counts = {
+				open: data.repository.open.totalCount,
+				closed: data.repository.closed.totalCount,
+				merged: data.repository.merged.totalCount
+			};
+			return json({
+				items: data.repository.selected.nodes.map(toPullRequestFromNode),
+				counts,
+				total: counts.open + counts.closed + counts.merged,
+				pageSize,
+				nextCursor: data.repository.selected.pageInfo.endCursor,
+				hasNextPage: data.repository.selected.pageInfo.hasNextPage
 			});
-			return json({ pullRequests: (data as unknown as Record<string, any>[]).map(toPullRequest) });
 		}
 
 		const number = Number(numberParam);
 		if (!Number.isInteger(number) || number < 1) throw error(400, 'Invalid pull request number.');
 
 		const { data: pullData } = await octokit.rest.pulls.get({ owner, repo, pull_number: number });
-		const pullRequest = toPullRequest(pullData as unknown as Record<string, any>);
+		const pullRequest = toPullRequest(pullData);
 		const { data: runsData } = await octokit.rest.actions.listWorkflowRunsForRepo({
 			owner,
 			repo,

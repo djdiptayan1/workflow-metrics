@@ -4,19 +4,72 @@
 
 	const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
-	let { runs, owner, repo }: { runs: RecentRun[]; owner: string; repo: string } = $props();
+	let {
+		runs = [],
+		owner,
+		repo,
+		serverPagination = false,
+		lookback = '30'
+	}: {
+		runs?: RecentRun[];
+		owner: string;
+		repo: string;
+		serverPagination?: boolean;
+		lookback?: '7' | '30' | '90' | 'all';
+	} = $props();
 
 	let pageSize = $state(20);
 	let page = $state(1);
+	let serverRuns = $state<RecentRun[]>([]);
+	let serverTotal = $state(0);
+	let loading = $state(false);
+	let loadError = $state<string | null>(null);
 
-	const totalPages = $derived(Math.max(1, Math.ceil(runs.length / pageSize)));
+	const totalItems = $derived(serverPagination ? serverTotal : runs.length);
+	const totalPages = $derived(Math.max(1, Math.ceil(totalItems / pageSize)));
 	const clampedPage = $derived(Math.min(page, totalPages));
-	const paginatedRuns = $derived(runs.slice((clampedPage - 1) * pageSize, clampedPage * pageSize));
-	const startItem = $derived(runs.length === 0 ? 0 : (clampedPage - 1) * pageSize + 1);
-	const endItem = $derived(Math.min(clampedPage * pageSize, runs.length));
+	const paginatedRuns = $derived(
+		serverPagination ? serverRuns : runs.slice((clampedPage - 1) * pageSize, clampedPage * pageSize)
+	);
+	const startItem = $derived(totalItems === 0 ? 0 : (clampedPage - 1) * pageSize + 1);
+	const endItem = $derived(Math.min(clampedPage * pageSize, totalItems));
 
 	$effect(() => {
 		if (page > totalPages) page = totalPages;
+	});
+
+	$effect(() => {
+		if (!serverPagination) return;
+		const requestedPage = page;
+		const requestedPageSize = pageSize;
+		const controller = new AbortController();
+		loading = true;
+		loadError = null;
+		void fetch(
+			`/api/dashboard/runs?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&days=${lookback}&page=${requestedPage}&pageSize=${requestedPageSize}`,
+			{ signal: controller.signal }
+		)
+			.then(async (response) => {
+				if (!response.ok) throw new Error('Could not load workflow runs.');
+				return (await response.json()) as {
+					items: RecentRun[];
+					total: number;
+					page: number;
+					pageSize: number;
+				};
+			})
+			.then((result) => {
+				serverRuns = result.items;
+				serverTotal = result.total;
+			})
+			.catch((cause) => {
+				if (cause instanceof DOMException && cause.name === 'AbortError') return;
+				loadError = cause instanceof Error ? cause.message : 'Could not load workflow runs.';
+			})
+			.finally(() => {
+				if (!controller.signal.aborted) loading = false;
+			});
+		return () => controller.abort();
 	});
 
 	function setPageSize(size: number) {
@@ -28,7 +81,7 @@
 <div class="bg-card border-border overflow-hidden rounded-xl border">
 	<div class="border-border flex flex-wrap items-center justify-between gap-3 border-b p-5">
 		<h2 class="text-foreground text-sm font-semibold">Recent Runs</h2>
-		{#if runs.length > 0}
+		{#if totalItems > 0}
 			<div class="flex flex-wrap items-center gap-3">
 				<span class="text-muted-foreground text-xs">Show</span>
 				<div
@@ -53,12 +106,22 @@
 		{/if}
 	</div>
 
-	{#if runs.length === 0}
+	{#if loading && paginatedRuns.length === 0}
+		<div class="text-muted-foreground flex h-24 items-center justify-center text-sm">
+			Loading runs…
+		</div>
+	{:else if loadError}
+		<div class="text-destructive flex h-24 items-center justify-center px-5 text-sm" role="alert">
+			{loadError}
+		</div>
+	{:else if totalItems === 0}
 		<div class="text-muted-foreground flex h-24 items-center justify-center text-sm">
 			No recent runs
 		</div>
 	{:else}
-		<p class="text-muted-foreground px-5 pt-2 pb-1 text-xs sm:hidden">Swipe to see more columns →</p>
+		<p class="text-muted-foreground px-5 pt-2 pb-1 text-xs sm:hidden">
+			Swipe to see more columns →
+		</p>
 		<div class="overflow-x-auto">
 			<table class="w-full text-sm">
 				<thead>
@@ -184,12 +247,12 @@
 		</div>
 
 		<!-- Pagination -->
-		{#if runs.length > pageSize}
+		{#if totalItems > pageSize}
 			<div
 				class="border-border flex flex-wrap items-center justify-between gap-3 border-t px-5 py-3"
 			>
 				<p class="text-muted-foreground text-xs">
-					Showing {startItem}–{endItem} of {runs.length}
+					Showing {startItem}–{endItem} of {totalItems}
 				</p>
 				<div class="flex items-center gap-2">
 					<button

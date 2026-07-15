@@ -3,11 +3,7 @@
 	import { formatDuration, formatRelativeTime } from '$lib/utils';
 	let { data }: { data: PageData } = $props();
 	const failedJob = $derived(data.jobs.find((job) => job.conclusion === 'failure') ?? null);
-	const durationMs = $derived(
-		data.run.run_started_at
-			? new Date(data.run.updated_at).getTime() - new Date(data.run.run_started_at).getTime()
-			: null
-	);
+	const durationMs = $derived(data.durationMs);
 	let copyingLog = $state(false);
 	let copiedLog = $state(false);
 	let analyzing = $state(false);
@@ -80,7 +76,10 @@
 			{data.run.conclusion === 'failure' ? 'Failure investigation' : 'Run details'}
 		</h1>
 		<p class="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-			{#if data.run.head_branch}<span class="bg-secondary text-secondary-foreground rounded px-1.5 py-0.5 font-mono">{data.run.head_branch}</span>{/if}
+			{#if data.run.head_branch}<span
+					class="bg-secondary text-secondary-foreground rounded px-1.5 py-0.5 font-mono"
+					>{data.run.head_branch}</span
+				>{/if}
 			{#if data.run.actor?.login}<span>{data.run.actor.login}</span>{/if}
 			{#if durationMs != null}<span>{formatDuration(durationMs)}</span>{/if}
 			{#if data.run.run_started_at}<span>{formatRelativeTime(data.run.run_started_at)}</span>{/if}
@@ -95,13 +94,13 @@
 						type="button"
 						onclick={copyEntireLog}
 						disabled={copyingLog}
-						class="border-border bg-card text-foreground hover:bg-muted focus-visible:ring-ring rounded-md border px-3 py-1.5 text-xs font-medium disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none"
+						class="border-border bg-card text-foreground hover:bg-muted focus-visible:ring-ring rounded-md border px-3 py-1.5 text-xs font-medium focus-visible:ring-2 focus-visible:outline-none disabled:opacity-50"
 						>{copyingLog ? 'Copying…' : copiedLog ? 'Copied!' : 'Copy entire log'}</button
 					>{#if data.hasAiKey}<button
 							type="button"
 							onclick={analyzeFailure}
 							disabled={analyzing}
-							class="bg-primary text-primary-foreground hover:bg-primary/90 focus-visible:ring-ring rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none"
+							class="bg-primary text-primary-foreground hover:bg-primary/90 focus-visible:ring-ring rounded-md px-3 py-1.5 text-xs font-medium focus-visible:ring-2 focus-visible:outline-none disabled:opacity-50"
 							>{analyzing ? 'Analyzing…' : 'Explain with AI'}</button
 						>{:else}<a
 							href="/settings"
@@ -112,7 +111,6 @@
 				</div>
 			</div>
 			{#if data.failureExcerpt}<pre
-					tabindex="0"
 					role="region"
 					aria-label="Failure log excerpt"
 					class="text-foreground bg-muted focus-visible:ring-ring mt-4 max-h-96 overflow-auto rounded-md p-4 text-xs leading-5 focus-visible:ring-2 focus-visible:outline-none"><code
@@ -137,6 +135,7 @@
 		>
 			<h2 class="text-foreground text-sm font-semibold">AI failure analysis</h2>
 			<div class="analysis-markdown text-foreground mt-3 text-sm leading-6">
+				<!-- eslint-disable-next-line svelte/no-at-html-tags -- DOMPurify sanitizes this value above. -->
 				{@html analysisHtml}
 			</div>
 		</section>{/if}

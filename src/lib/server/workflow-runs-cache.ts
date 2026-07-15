@@ -1,231 +1,367 @@
+import { randomUUID } from 'node:crypto';
+import type { RedisClientType } from 'redis';
 import type { GitHubWorkflowRun } from '$lib/types/github';
-import type { DashboardData } from '$lib/types/metrics';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DashboardData, RecentRun, WorkflowDetailData } from '$lib/types/metrics';
+import { getRedisClient } from '$lib/server/redis';
+import { getRunTiming } from '$lib/server/run-timing';
 
-/** How long a cache entry is considered fresh (we serve immediately, no refetch needed). */
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+export type ActionsLookback = '7' | '30' | '90' | 'all';
 
-/**
- * How long a stale cache entry is still usable for stale-while-revalidate.
- * Data older than CACHE_TTL_MS but within STALE_TTL_MS is served instantly with
- * a background refresh triggered in parallel.
- */
-const STALE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
+const CACHE_VERSION = 'v1';
+const STALE_TTL_MS = 24 * 60 * 60 * 1000;
+const RECONCILE_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+const LOCK_TTL_MS = 30 * 60 * 1000;
+const WORKFLOW_FILE_TTL_SECONDS = 60 * 60;
+const MISSING_WORKFLOW_FILE = '__missing__';
+const CHUNK_SIZE = 500;
 
-/** Max age of cache rows before automatic deletion (data retention). */
-const CACHE_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-export interface WorkflowRunsCacheRow {
-	runs: unknown;
-	dashboard_data?: unknown;
-	fetched_at: string;
+interface StoredSnapshot {
+	dashboardData: DashboardData;
+	fetchedAt: string;
+	doraWorkflowIds: number[];
 }
 
-export interface CachedRunsResult {
-	runs: GitHubWorkflowRun[];
-	/** Present for entries created after dashboard snapshot caching was introduced. */
-	dashboardData: DashboardData | null;
-	/** True when data is older than CACHE_TTL_MS but within STALE_TTL_MS. */
+export interface CachedDashboardSnapshot {
+	dashboardData: DashboardData;
 	isStale: boolean;
+	fetchedAt: string;
 }
 
-/** Deletes cache rows older than CACHE_RETENTION_MS. Call periodically (e.g. on cache read). */
-export async function deleteExpiredWorkflowRunsCache(supabase: SupabaseClient): Promise<void> {
-	const cutoff = new Date(Date.now() - CACHE_RETENTION_MS).toISOString();
-	await supabase.from('workflow_runs_cache').delete().lt('fetched_at', cutoff);
+export interface PaginatedRuns {
+	items: RecentRun[];
+	total: number;
+	page: number;
+	pageSize: number;
 }
 
-export async function deleteExpiredWorkflowDetailRunsCache(
-	supabase: SupabaseClient
+function part(value: string): string {
+	return encodeURIComponent(value.toLowerCase());
+}
+
+function baseKey(userId: string, owner: string, repo: string): string {
+	return `workflow-metrics:${CACHE_VERSION}:${part(userId)}:${part(owner)}:${part(repo)}`;
+}
+
+function keys(userId: string, owner: string, repo: string, lookback: ActionsLookback) {
+	const base = baseKey(userId, owner, repo);
+	return {
+		runs: `${base}:runs`,
+		repoIndex: `${base}:index:${lookback}:repo`,
+		workflowIds: `${base}:index:${lookback}:workflow-ids`,
+		workflowIndex: (workflowId: number) => `${base}:index:${lookback}:workflow:${workflowId}`,
+		snapshot: `${base}:snapshot:${lookback}`,
+		detailSnapshot: (workflowId: number) => `${base}:snapshot:${lookback}:workflow:${workflowId}`,
+		lock: (scope: string) => `${base}:lock:${lookback}:${part(scope)}`,
+		reconciledAt: `${base}:reconciled-at:${lookback}`,
+		workflowFile: (path: string) => `${base}:workflow-file:${encodeURIComponent(path)}`
+	};
+}
+
+async function redis(): Promise<RedisClientType> {
+	return getRedisClient();
+}
+
+function recentRun(run: GitHubWorkflowRun): RecentRun {
+	const timing = getRunTiming(run);
+	return {
+		id: run.id,
+		workflowName: run.name ?? `Workflow ${run.workflow_id}`,
+		workflowId: run.workflow_id,
+		status: run.status,
+		conclusion: run.conclusion,
+		branch: run.head_branch,
+		durationMs: timing.durationMs,
+		startedAt: timing.startedAt,
+		htmlUrl: run.html_url,
+		actor: run.actor?.login ?? null,
+		actorAvatar: run.actor?.avatar_url ?? null,
+		runNumber: run.run_number
+	};
+}
+
+async function readRuns(
+	client: RedisClientType,
+	hashKey: string,
+	ids: string[]
+): Promise<GitHubWorkflowRun[]> {
+	const runs: GitHubWorkflowRun[] = [];
+	for (let offset = 0; offset < ids.length; offset += CHUNK_SIZE) {
+		const values = await client.hmGet(hashKey, ids.slice(offset, offset + CHUNK_SIZE));
+		for (const value of values) {
+			if (!value) continue;
+			try {
+				runs.push(JSON.parse(value) as GitHubWorkflowRun);
+			} catch {
+				// Ignore an individually corrupted cache entry; the next sync repairs the index.
+			}
+		}
+	}
+	return runs;
+}
+
+export async function getDashboardSnapshot(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback,
+	freshnessMs: number,
+	doraWorkflowIds: number[]
+): Promise<CachedDashboardSnapshot | null> {
+	const client = await redis();
+	const raw = await client.get(keys(userId, owner, repo, lookback).snapshot);
+	if (!raw) return null;
+	try {
+		const snapshot = JSON.parse(raw) as StoredSnapshot;
+		if (
+			[...snapshot.doraWorkflowIds].sort((a, b) => a - b).join(',') !==
+			[...doraWorkflowIds].sort((a, b) => a - b).join(',')
+		) {
+			return null;
+		}
+		const age = Date.now() - Date.parse(snapshot.fetchedAt);
+		if (!Number.isFinite(age) || age > STALE_TTL_MS) return null;
+		return {
+			dashboardData: snapshot.dashboardData,
+			isStale: age > freshnessMs,
+			fetchedAt: snapshot.fetchedAt
+		};
+	} catch {
+		return null;
+	}
+}
+
+export async function setDashboardSnapshot(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback,
+	dashboardData: DashboardData,
+	doraWorkflowIds: number[]
 ): Promise<void> {
-	const cutoff = new Date(Date.now() - CACHE_RETENTION_MS).toISOString();
-	await supabase.from('workflow_detail_runs_cache').delete().lt('fetched_at', cutoff);
-}
-
-/**
- * Returns cached runs if present and not too old.
- *
- * - Fresh (< CACHE_TTL_MS): returns { runs, isStale: false }
- * - Stale (CACHE_TTL_MS–STALE_TTL_MS): returns { runs, isStale: true } — serve immediately, refresh in background
- * - Too old (> STALE_TTL_MS) or missing: returns null — full refetch required
- */
-export async function getCachedWorkflowRuns(
-	supabase: SupabaseClient,
-	userId: string,
-	owner: string,
-	repo: string,
-	windowStart: string,
-	freshnessMs = CACHE_TTL_MS
-): Promise<CachedRunsResult | null> {
-	// Fire-and-forget cleanup of expired rows (limited retention)
-	deleteExpiredWorkflowRunsCache(supabase).catch((err) =>
-		console.warn('Workflow runs cache cleanup failed:', err)
-	);
-
-	const { data, error } = await supabase
-		.from('workflow_runs_cache')
-		.select('runs, dashboard_data, fetched_at')
-		.eq('user_id', userId)
-		.eq('owner', owner)
-		.eq('name', repo)
-		.eq('window_start', windowStart)
-		.maybeSingle();
-
-	if (error) {
-		console.warn('[workflow-runs-cache] getCachedWorkflowRuns error:', error.message, {
-			code: error.code,
-			hint: error.details
-		});
-		return null;
-	}
-	if (!data) return null;
-
-	const row = data as WorkflowRunsCacheRow;
-	const fetchedAt = new Date(row.fetched_at).getTime();
-	const ageMs = Date.now() - fetchedAt;
-
-	// Too old — caller must do a full refetch
-	if (ageMs > STALE_TTL_MS) return null;
-
-	const runs = Array.isArray(row.runs) ? (row.runs as GitHubWorkflowRun[]) : null;
-	if (!runs) return null;
-
-	const dashboardData =
-		row.dashboard_data && typeof row.dashboard_data === 'object'
-			? (row.dashboard_data as DashboardData)
-			: null;
-
-	return { runs, dashboardData, isStale: ageMs > freshnessMs };
-}
-
-/** Stores workflow runs in the cache for the given repo and window. */
-export async function setCachedWorkflowRuns(
-	supabase: SupabaseClient,
-	userId: string,
-	owner: string,
-	repo: string,
-	windowStart: string,
-	runs: GitHubWorkflowRun[],
-	dashboardData?: DashboardData
-): Promise<{ ok: boolean; error?: string }> {
-	const row = {
-		user_id: userId,
-		owner,
-		name: repo,
-		window_start: windowStart,
-		runs: runs as unknown as Record<string, unknown>[],
-		dashboard_data: dashboardData ?? null,
-		fetched_at: new Date().toISOString()
+	const client = await redis();
+	const snapshot: StoredSnapshot = {
+		dashboardData,
+		fetchedAt: new Date().toISOString(),
+		doraWorkflowIds
 	};
-	const { data, error } = await supabase
-		.from('workflow_runs_cache')
-		.upsert(row, {
-			onConflict: 'user_id,owner,name,window_start',
-			ignoreDuplicates: false
-		})
-		.select('id')
-		.limit(1);
-
-	if (error) {
-		console.warn('[workflow-runs-cache] setCachedWorkflowRuns failed:', error.message, {
-			code: error.code,
-			details: error.details,
-			owner,
-			name: repo,
-			window_start: windowStart
-		});
-		return { ok: false, error: error.message };
-	}
-	// suppress unused variable warning
-	void data;
-	return { ok: true };
+	await client.set(keys(userId, owner, repo, lookback).snapshot, JSON.stringify(snapshot), {
+		PX: STALE_TTL_MS
+	});
 }
 
-// --- Workflow detail page cache (runs for a single workflow) ---
-
-/**
- * Returns cached runs for a single workflow if present and not too old.
- *
- * Same stale-while-revalidate semantics as getCachedWorkflowRuns.
- */
-export async function getCachedWorkflowDetailRuns(
-	supabase: SupabaseClient,
+export async function storeWorkflowRuns(
 	userId: string,
 	owner: string,
 	repo: string,
-	workflowId: number,
-	windowStart: string,
-	freshnessMs = CACHE_TTL_MS
-): Promise<CachedRunsResult | null> {
-	deleteExpiredWorkflowDetailRunsCache(supabase).catch((err) =>
-		console.warn('Workflow detail runs cache cleanup failed:', err)
-	);
-
-	const { data, error } = await supabase
-		.from('workflow_detail_runs_cache')
-		.select('runs, fetched_at')
-		.eq('user_id', userId)
-		.eq('owner', owner)
-		.eq('name', repo)
-		.eq('workflow_id', workflowId)
-		.eq('window_start', windowStart)
-		.maybeSingle();
-
-	if (error) {
-		console.warn('[workflow-detail-cache] getCachedWorkflowDetailRuns error:', error.message, {
-			code: error.code,
-			workflow_id: workflowId
-		});
-		return null;
-	}
-	if (!data) return null;
-
-	const row = data as WorkflowRunsCacheRow;
-	const fetchedAt = new Date(row.fetched_at).getTime();
-	const ageMs = Date.now() - fetchedAt;
-
-	if (ageMs > STALE_TTL_MS) return null;
-
-	const runs = Array.isArray(row.runs) ? (row.runs as GitHubWorkflowRun[]) : null;
-	if (!runs) return null;
-
-	return { runs, dashboardData: null, isStale: ageMs > freshnessMs };
-}
-
-/** Stores workflow detail runs (single workflow) in the cache. */
-export async function setCachedWorkflowDetailRuns(
-	supabase: SupabaseClient,
-	userId: string,
-	owner: string,
-	repo: string,
-	workflowId: number,
-	windowStart: string,
+	lookback: ActionsLookback,
 	runs: GitHubWorkflowRun[]
-): Promise<{ ok: boolean; error?: string }> {
-	const row = {
-		user_id: userId,
-		owner,
-		name: repo,
-		workflow_id: workflowId,
-		window_start: windowStart,
-		runs: runs as unknown as Record<string, unknown>[],
-		fetched_at: new Date().toISOString()
-	};
-	const { error } = await supabase
-		.from('workflow_detail_runs_cache')
-		.upsert(row, {
-			onConflict: 'user_id,owner,name,workflow_id,window_start',
-			ignoreDuplicates: false
-		})
-		.select('id')
-		.limit(1);
-
-	if (error) {
-		console.warn('[workflow-detail-cache] setCachedWorkflowDetailRuns failed:', error.message, {
-			code: error.code,
-			workflow_id: workflowId
-		});
-		return { ok: false, error: error.message };
+): Promise<void> {
+	const client = await redis();
+	const cacheKeys = keys(userId, owner, repo, lookback);
+	const workflowIds = [...new Set(runs.map((run) => run.workflow_id))];
+	let previousWorkflowIds: number[] = [];
+	try {
+		previousWorkflowIds = JSON.parse((await client.get(cacheKeys.workflowIds)) ?? '[]') as number[];
+	} catch {
+		previousWorkflowIds = [];
 	}
-	return { ok: true };
+	await client.del([
+		cacheKeys.repoIndex,
+		...[...new Set([...workflowIds, ...previousWorkflowIds])].map(cacheKeys.workflowIndex)
+	]);
+	await client.set(cacheKeys.workflowIds, JSON.stringify(workflowIds));
+
+	for (let offset = 0; offset < runs.length; offset += CHUNK_SIZE) {
+		const chunk = runs.slice(offset, offset + CHUNK_SIZE);
+		const hash: Record<string, string> = {};
+		for (const run of chunk) hash[String(run.id)] = JSON.stringify(run);
+		await client.hSet(cacheKeys.runs, hash);
+		await client.zAdd(
+			cacheKeys.repoIndex,
+			chunk.map((run) => ({ score: Date.parse(run.created_at) || 0, value: String(run.id) }))
+		);
+		for (const workflowId of workflowIds) {
+			const workflowRuns = chunk.filter((run) => run.workflow_id === workflowId);
+			if (workflowRuns.length === 0) continue;
+			await client.zAdd(
+				cacheKeys.workflowIndex(workflowId),
+				workflowRuns.map((run) => ({
+					score: Date.parse(run.created_at) || 0,
+					value: String(run.id)
+				}))
+			);
+		}
+	}
+}
+
+export async function storeSingleWorkflowRuns(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback,
+	workflowId: number,
+	runs: GitHubWorkflowRun[]
+): Promise<void> {
+	const client = await redis();
+	const cacheKeys = keys(userId, owner, repo, lookback);
+	const index = cacheKeys.workflowIndex(workflowId);
+	await client.del(index);
+	for (let offset = 0; offset < runs.length; offset += CHUNK_SIZE) {
+		const chunk = runs.slice(offset, offset + CHUNK_SIZE);
+		const hash: Record<string, string> = {};
+		for (const run of chunk) hash[String(run.id)] = JSON.stringify(run);
+		await client.hSet(cacheKeys.runs, hash);
+		await client.zAdd(
+			index,
+			chunk.map((run) => ({ score: Date.parse(run.created_at) || 0, value: String(run.id) }))
+		);
+	}
+}
+
+export async function getWorkflowDetailSnapshot(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback,
+	workflowId: number,
+	freshnessMs: number
+): Promise<{ data: WorkflowDetailData; isStale: boolean } | null> {
+	const raw = await (
+		await redis()
+	).get(keys(userId, owner, repo, lookback).detailSnapshot(workflowId));
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw) as { data: WorkflowDetailData; fetchedAt: string };
+		const age = Date.now() - Date.parse(parsed.fetchedAt);
+		if (!Number.isFinite(age) || age > STALE_TTL_MS) return null;
+		return { data: parsed.data, isStale: age > freshnessMs };
+	} catch {
+		return null;
+	}
+}
+
+export async function setWorkflowDetailSnapshot(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback,
+	workflowId: number,
+	data: WorkflowDetailData
+): Promise<void> {
+	await (
+		await redis()
+	).set(
+		keys(userId, owner, repo, lookback).detailSnapshot(workflowId),
+		JSON.stringify({ data, fetchedAt: new Date().toISOString() }),
+		{ PX: STALE_TTL_MS }
+	);
+}
+
+export async function getWorkflowRuns(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback,
+	workflowId?: number
+): Promise<GitHubWorkflowRun[]> {
+	const client = await redis();
+	const cacheKeys = keys(userId, owner, repo, lookback);
+	const index = workflowId ? cacheKeys.workflowIndex(workflowId) : cacheKeys.repoIndex;
+	const ids = await client.zRange(index, 0, -1, { REV: true });
+	return readRuns(client, cacheKeys.runs, ids);
+}
+
+export async function getPaginatedRuns(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback,
+	page: number,
+	pageSize: number
+): Promise<PaginatedRuns> {
+	const client = await redis();
+	const cacheKeys = keys(userId, owner, repo, lookback);
+	const total = await client.zCard(cacheKeys.repoIndex);
+	const start = (page - 1) * pageSize;
+	const ids = await client.zRange(cacheKeys.repoIndex, start, start + pageSize - 1, { REV: true });
+	const runs = await readRuns(client, cacheKeys.runs, ids);
+	return { items: runs.map(recentRun), total, page, pageSize };
+}
+
+export async function acquireSyncLock(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback,
+	scope = 'repo'
+): Promise<string | null> {
+	const token = randomUUID();
+	const client = await redis();
+	const result = await client.set(keys(userId, owner, repo, lookback).lock(scope), token, {
+		NX: true,
+		PX: LOCK_TTL_MS
+	});
+	return result === 'OK' ? token : null;
+}
+
+export async function releaseSyncLock(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback,
+	token: string,
+	scope = 'repo'
+): Promise<void> {
+	const client = await redis();
+	await client.eval(
+		"if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+		{ keys: [keys(userId, owner, repo, lookback).lock(scope)], arguments: [token] }
+	);
+}
+
+export async function reconciliationDue(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback
+): Promise<boolean> {
+	const value = await (await redis()).get(keys(userId, owner, repo, lookback).reconciledAt);
+	return !value || Date.now() - Date.parse(value) >= RECONCILE_INTERVAL_MS;
+}
+
+export async function markReconciled(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback
+): Promise<void> {
+	await (
+		await redis()
+	).set(keys(userId, owner, repo, lookback).reconciledAt, new Date().toISOString());
+}
+
+export async function getCachedWorkflowFile(
+	userId: string,
+	owner: string,
+	repo: string,
+	path: string
+): Promise<{ hit: boolean; content: string | null }> {
+	const value = await (await redis()).get(keys(userId, owner, repo, 'all').workflowFile(path));
+	return value === null
+		? { hit: false, content: null }
+		: { hit: true, content: value === MISSING_WORKFLOW_FILE ? null : value };
+}
+
+export async function setCachedWorkflowFile(
+	userId: string,
+	owner: string,
+	repo: string,
+	path: string,
+	content: string | null
+): Promise<void> {
+	await (
+		await redis()
+	).set(keys(userId, owner, repo, 'all').workflowFile(path), content ?? MISSING_WORKFLOW_FILE, {
+		EX: WORKFLOW_FILE_TTL_SECONDS
+	});
 }

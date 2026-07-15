@@ -8,7 +8,6 @@
 [![Release](https://github.com/timoa/workflow-metrics/actions/workflows/release.yml/badge.svg)](https://github.com/timoa/workflow-metrics/actions/workflows/release.yml)
 [![License](https://img.shields.io/github/license/timoa/workflow-metrics)](LICENSE)
 
-
 An open-source dashboard for GitHub Actions metrics with AI-powered optimization suggestions.
 
 ![Workflow Metrics demo](https://workflow-metrics.com/images/demo/workflow-metrics-26-03-02.gif)
@@ -31,13 +30,51 @@ An open-source dashboard for GitHub Actions metrics with AI-powered optimization
 - **Job + step breakdowns** — Per-job timing analysis (avg/min/max) and slowest-job step-level breakdown from recent completed runs
 - **Run failure investigation** — Open any run inside the app to inspect failed jobs and steps, copy the full GitHub log, and generate an AI explanation with commit/PR attribution and suggested next actions
 - **Workflow file preview** — Inspect workflow YAML from the workflow detail page without leaving the dashboard
-- **Pull request workspace** — Browse open, closed, and merged PRs; search by PR number or title; view changed LOC and the latest status of each associated GitHub Action
+- **Pull request workspace** — Cursor-paginate complete open, closed, and merged PR history; filter the current page by PR number or title; view changed LOC and the latest status of each associated GitHub Action
 - **AI optimization and failure analysis** — Use configured OpenAI, Google Gemini, or Mistral models for streaming workflow suggestions and evidence-based failure explanations
 - **Apply as PR** — Push AI optimization suggestions directly as a pull request via the GitHub App integration
 - **Shared workflow preferences** — Repository admins can make workflow pins and environment labels shared; personal preferences remain user-specific by default
 - **Settings page** — Manage GitHub connections, tracked repositories, AI provider/model, Actions history, dashboard refresh policy, shared preferences, and theme
 - **Performance-aware caching** — Derived dashboard snapshots are cached with a user-selectable realtime, 5-, 10-, or 15-minute refresh policy; stale snapshots refresh in the background
 - **Dark / light mode** — Dark by default, persisted per user preference
+
+## Data freshness, caching, and pagination
+
+### Workflow runs and metrics
+
+Workflow-run data and derived dashboard/workflow snapshots are stored in Redis, isolated by user,
+repository, and 7/30/90/all-history lookback. The refresh setting is a freshness policy, not browser
+polling.
+
+| Cache condition                    | What the user receives                                 | GitHub workflow-run requests                                   |
+| ---------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------- |
+| Fresh snapshot                     | Redis snapshot immediately                             | None                                                           |
+| Stale snapshot                     | Existing snapshot immediately                          | One lock-protected incremental refresh runs in the background  |
+| First load                         | Progress stream while all selected history is imported | Paginated until GitHub returns the end of the selected history |
+| Redis unavailable with no snapshot | Retryable `503`                                        | No unbounded fallback import                                   |
+
+Changing screens may call the application API again, but it does not repaginate GitHub runs while
+the snapshot is fresh. `realtime` permits a refresh on each visit; the other settings keep snapshots
+fresh for 5, 10, or 15 minutes. A weekly reconciliation catches older reruns or deletions. Responses
+include `X-Data-Cache` and `X-Data-Sync` headers for diagnosis. Workflow-file hits and known-missing
+files are cached for one hour.
+
+### Pull requests
+
+Pull requests use GitHub GraphQL cursor pagination with page sizes of 20, 50, or 100. Open,
+closed-unmerged, and merged counts are returned separately, and pagination can traverse the complete
+repository history without loading the full collection into the browser or using GitHub Search's
+1,000-result window. Opening the PR screen, changing a tab, or moving page fetches only that page.
+
+### Duration data quality
+
+Every duration-based surface uses the same effective completion time: repository/workflow averages,
+P50/P95, trends, recent runs, build and wasted minutes, daily minutes, lead time, and MTTR. A completed
+run whose listing timestamps exceed GitHub's 35-day workflow limit is repaired from its matching
+workflow-attempt timestamps. If repair fails, the run remains in counts and rates but is excluded
+from time calculations; the UI reports the excluded count instead of publishing a corrupted value.
+Durations within the documented limit are retained; the application does not invent replacement
+values or clamp legitimate long-running workflows.
 
 ## Workflow Flow Chart
 
@@ -65,7 +102,7 @@ flowchart LR
 - **Auth & Database**: Supabase (GitHub OAuth + PostgreSQL)
 - **GitHub API**: `@octokit/rest`
 - **AI**: Vercel AI SDK + OpenAI, Google Generative AI, and Mistral providers (streaming)
-- **Deployment**: Cloudflare Pages via `@sveltejs/adapter-cloudflare`
+- **Runtime**: Node.js 24 via `@sveltejs/adapter-node`, Docker Compose, and Redis 8
 - **Package manager**: PNPM
 
 ## Design
@@ -89,10 +126,11 @@ The instructions below assume a hosted Supabase project instead.
    cp .env.example .env
    ```
 
-2. Start the app:
+2. Build the local source and start the app plus its private Redis service:
 
    ```bash
-   docker compose up --build
+   CI_OBSERVE_IMAGE=workflow-metrics:local docker compose up -d --build
+   docker compose ps
    ```
 
 3. Open http://localhost:5173.
@@ -132,12 +170,12 @@ pnpm install
    - In **Supabase → Authentication → URL Configuration → Redirect URLs**, add:
      ```
      http://localhost:5173/auth/callback
-     https://your-project.pages.dev/auth/callback
+     https://metrics.example.com/auth/callback
      ```
 4. From **Supabase → Project Settings → API**, copy:
    - **Project URL** → `PUBLIC_SUPABASE_URL`
    - **anon / public** key → `PUBLIC_SUPABASE_ANON_KEY`
-   - **service_role** key → `SUPABASE_SERVICE_ROLE_KEY` *(server-only; bypasses RLS for cache writes — never expose this key to the browser or commit it to source control)*
+   - **service_role** key → `SUPABASE_SERVICE_ROLE_KEY` _(server-only; used for privileged shared-preference operations — never expose it to the browser or commit it)_
 
 ### 3. Create a GitHub App (for "Apply as PR")
 
@@ -146,8 +184,8 @@ The "Apply as PR" feature — which pushes AI optimization suggestions directly 
 1. Go to [GitHub → Settings → Developer settings → GitHub Apps → New GitHub App](https://github.com/settings/apps/new).
 2. Fill in the details:
    - **GitHub App name**: e.g. `workflow-metrics-bot`
-   - **Homepage URL**: your app URL (e.g. `https://your-project.pages.dev`)
-   - **Callback URL**: `https://your-project.pages.dev/auth/github-app/callback`
+   - **Homepage URL**: your app URL (e.g. `https://metrics.example.com`)
+   - **Callback URL**: `https://metrics.example.com/auth/github-app/callback`
      - For local dev, also add: `http://localhost:5173/auth/github-app/callback`
    - **Webhook**: uncheck **Active** (not needed)
 3. Under **Repository permissions**, set:
@@ -189,11 +227,12 @@ Fill in the values:
 PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+REDIS_URL=redis://localhost:6379
 
 # ── App URL (production only) ─────────────────────────────────────────────────
 # Required in production so OAuth redirects back to the correct URL.
 # Leave commented out for local dev — the app uses the request origin automatically.
-# PUBLIC_APP_URL=https://your-project.pages.dev
+# PUBLIC_APP_URL=https://metrics.example.com
 
 # ── GitHub App (for "Apply as PR") ───────────────────────────────────────────
 GITHUB_APP_ID=your-numeric-app-id
@@ -201,15 +240,18 @@ GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVA
 GITHUB_APP_SLUG=your-github-app-slug
 ```
 
-| Variable | Required | Description |
-|---|---|---|
-| `PUBLIC_SUPABASE_URL` | Yes | Supabase project URL |
-| `PUBLIC_SUPABASE_ANON_KEY` | Yes | Supabase anon (public) key |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key — bypasses RLS for server-side cache writes. Never expose this to the browser or commit it to source control |
-| `PUBLIC_APP_URL` | Production only | Your deployed app URL (e.g. `https://your-project.pages.dev`), no trailing slash |
-| `GITHUB_APP_ID` | Yes | Numeric App ID from GitHub App settings |
-| `GITHUB_APP_PRIVATE_KEY` | Yes | RSA private key from GitHub App settings (full PEM, newlines as `\n`) |
-| `GITHUB_APP_SLUG` | Yes | URL slug of your GitHub App (e.g. `workflow-metrics-bot`) |
+| Variable                    | Required          | Description                                                                                             |
+| --------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------- |
+| `PUBLIC_SUPABASE_URL`       | Yes               | Supabase project URL                                                                                    |
+| `PUBLIC_SUPABASE_ANON_KEY`  | Yes               | Supabase anon (public) key                                                                              |
+| `SUPABASE_INTERNAL_URL`     | Docker local only | Container-reachable Supabase URL, for example `http://host.docker.internal:54321`                       |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes               | Supabase service role key for privileged server operations. Never expose it to the browser or commit it |
+| `REDIS_URL`                 | Yes               | Redis connection URL. Use `rediss://` with TLS for a managed production Redis service                   |
+| `PUBLIC_APP_URL`            | Production only   | Your deployed app URL (e.g. `https://metrics.example.com`), no trailing slash                           |
+| `ORIGIN`                    | Production only   | Public adapter-node origin, normally the same value as `PUBLIC_APP_URL`                                 |
+| `GITHUB_APP_ID`             | Yes               | Numeric App ID from GitHub App settings                                                                 |
+| `GITHUB_APP_PRIVATE_KEY`    | Yes               | RSA private key from GitHub App settings (full PEM, newlines as `\n`)                                   |
+| `GITHUB_APP_SLUG`           | Yes               | URL slug of your GitHub App (e.g. `workflow-metrics-bot`)                                               |
 
 ### 5.1 App-wide developer config
 
@@ -246,37 +288,52 @@ pnpm dev
 
 Open [http://localhost:5173](http://localhost:5173).
 
-## Deployment (Cloudflare Pages)
+## Deployment (Node + Redis)
 
-### 1. Connect to Cloudflare Pages
+The supported production runtime is the Node image plus Redis. By default, Compose first attempts
+to pull `djdiptayan/workflow-metrics:latest`; if it is unavailable, Compose builds the Dockerfile:
 
-Connect your GitHub repository to Cloudflare Pages with these build settings:
+```bash
+docker compose up -d
+docker compose ps
+```
 
-- **Build command**: `pnpm run build`
-- **Build output directory**: `.svelte-kit/cloudflare`
-- **Node.js version**: 24
+For a local source build that must not overwrite the public image tag:
 
-### 2. Set environment variables
+```bash
+docker build -t workflow-metrics:local .
+CI_OBSERVE_IMAGE=workflow-metrics:local docker compose up -d --no-build
+```
 
-In **Cloudflare Pages → Settings → Environment Variables**, add all variables from the table above, including `PUBLIC_APP_URL` set to your production URL.
+Build and publish the multi-platform public image with:
 
-| Variable | Description |
-|---|---|
-| `PUBLIC_SUPABASE_URL` | Supabase project URL |
-| `PUBLIC_SUPABASE_ANON_KEY` | Supabase anon (public) key |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key |
-| `PUBLIC_APP_URL` | Your production app URL (e.g. `https://your-project.pages.dev`) |
-| `GITHUB_APP_ID` | GitHub App ID |
-| `GITHUB_APP_PRIVATE_KEY` | GitHub App RSA private key (full PEM, newlines as `\n`) |
-| `GITHUB_APP_SLUG` | GitHub App URL slug |
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --tag djdiptayan/workflow-metrics:latest \
+  --push .
+```
 
-### 3. Update Supabase OAuth redirect URLs
+Production deployments should prefer an immutable version tag through `CI_OBSERVE_IMAGE`, followed
+by `docker compose pull ci-observe` and `docker compose up -d --no-build`.
+
+The app runs the built Node server on container port 3000 and is mapped to
+`http://localhost:5173`. Redis is reachable only on the internal Compose network, persists its
+cache in `redis_data`, and is bounded to 512 MB. The app waits for Redis health before starting.
+The application runs as the unprivileged `node` user; the runtime image contains production
+dependencies only. `docker compose down` preserves the Redis volume. Use `docker compose down -v`
+only when you intentionally want to discard the cache and force a cold GitHub import.
+
+For a managed production Redis service, set `REDIS_URL` to its TLS `rediss://` URL and do not expose
+Redis to the public internet. Set `PUBLIC_APP_URL` to the public application URL.
+
+### Update Supabase OAuth redirect URLs
 
 In **Supabase → Authentication → URL Configuration → Redirect URLs**, ensure all URLs are listed:
 
 ```
 http://localhost:5173/auth/callback
-https://your-project.pages.dev/auth/callback
+https://metrics.example.com/auth/callback
 https://your-custom-domain.com/auth/callback   ← if using a custom domain
 ```
 
@@ -289,8 +346,8 @@ Tables:
 - `github_connections` — GitHub OAuth tokens per user
 - `repositories` — Tracked repositories per user
 - `user_settings` — Encrypted AI key/provider/model, theme, Actions history, dashboard refresh policy, and default repo
-- `workflow_runs_cache` — Raw runs plus derived dashboard snapshots for cache-first navigation
-- `workflow_detail_runs_cache` — Cached per-workflow run details
+- `workflow_runs_cache` — Historical unused cache table retained for migration compatibility
+- `workflow_detail_runs_cache` — Historical unused cache table retained for migration compatibility
 - `optimization_history` — History of AI optimization suggestions per workflow
 - `github_app_installations` — GitHub App installation records per repository
 - `dora_workflows` — User-selected workflows used for DORA calculations

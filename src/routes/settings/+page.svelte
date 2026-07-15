@@ -16,7 +16,9 @@
 	let aiSettingsInitialized = false;
 	let loadingModels = $state(false);
 	let modelsError = $state('');
-	let workflowModes = $state<Record<string, 'personal' | 'shared'>>(data.workflowModes ?? {});
+	let workflowModes = $derived<Record<string, 'personal' | 'shared'>>({
+		...(data.workflowModes ?? {})
+	});
 	let workflowModeError = $state<string | null>(null);
 	let savingWorkflowMode = $state<string | null>(null);
 
@@ -217,7 +219,7 @@
 						{/if}
 						{#if !repo.is_active}
 							<span
-								class="shrink-0 rounded-md border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning"
+								class="border-warning/30 bg-warning/10 text-warning shrink-0 rounded-md border px-2 py-0.5 text-xs font-medium"
 								>Inactive</span
 							>
 						{/if}
@@ -227,7 +229,8 @@
 							method="POST"
 							action="?/removeRepo"
 							use:enhance={({ cancel }) => {
-								if (!confirm(`Stop tracking ${repo.full_name}? You can add it back later.`)) cancel();
+								if (!confirm(`Stop tracking ${repo.full_name}? You can add it back later.`))
+									cancel();
 							}}
 						>
 							<input type="hidden" name="repo_id" value={repo.id} />
@@ -289,7 +292,7 @@
 				</div>
 				{#if data.installations.length > 0}
 					<span
-						class="flex shrink-0 items-center gap-1.5 rounded-full border border-success/20 bg-success/10 px-2.5 py-1 text-xs font-medium text-success"
+						class="border-success/20 bg-success/10 text-success flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium"
 					>
 						<svg
 							class="size-3"
@@ -302,7 +305,7 @@
 					</span>
 				{:else}
 					<span
-						class="flex shrink-0 items-center gap-1.5 rounded-full border border-warning/20 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning"
+						class="border-warning/20 bg-warning/10 text-warning flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium"
 					>
 						<svg
 							class="size-3"
@@ -320,14 +323,14 @@
 				<p class="text-destructive text-xs">{data.appError}</p>
 			{/if}
 			{#if data.appSuccess}
-				<p class="text-xs text-success">GitHub App installed successfully.</p>
+				<p class="text-success text-xs">GitHub App installed successfully.</p>
 			{/if}
 			{#if form?.syncError}
 				<p class="text-destructive text-xs">{form.syncError}</p>
 			{/if}
 			{#if form?.syncResult}
 				{#if form.syncResult.added > 0 || form.syncResult.removed > 0}
-					<p class="text-xs text-success">
+					<p class="text-success text-xs">
 						{form.syncResult.added > 0 && form.syncResult.removed > 0
 							? `Synced: ${form.syncResult.added} added, ${form.syncResult.removed} removed.`
 							: form.syncResult.added > 0
@@ -335,7 +338,7 @@
 								: `${form.syncResult.removed} installation${form.syncResult.removed > 1 ? 's' : ''} removed.`}
 					</p>
 				{:else if form.syncResult.notFound}
-					<p class="text-xs text-warning">
+					<p class="text-warning text-xs">
 						No installations found on GitHub matching your accounts. Make sure you installed the app
 						on the right account or organization.
 					</p>
@@ -349,7 +352,7 @@
 				<div class="space-y-2">
 					{#each data.installations as inst (inst.id)}
 						<div
-							class="flex items-center justify-between rounded-lg border border-success/20 bg-success/5 px-3 py-2"
+							class="border-success/20 bg-success/5 flex items-center justify-between rounded-lg border px-3 py-2"
 						>
 							<div class="flex min-w-0 items-center gap-3">
 								{#if inst.account_avatar_url}
@@ -493,7 +496,7 @@
 			{/if}
 			{#if form?.success}
 				<div
-					class="rounded-lg border border-success/20 bg-success/10 px-4 py-3 text-sm text-success"
+					class="border-success/20 bg-success/10 text-success rounded-lg border px-4 py-3 text-sm"
 				>
 					Settings saved successfully.
 				</div>
@@ -637,7 +640,7 @@
 			{/if}
 			{#if form?.success}
 				<div
-					class="rounded-lg border border-success/20 bg-success/10 px-4 py-3 text-sm text-success"
+					class="border-success/20 bg-success/10 text-success rounded-lg border px-4 py-3 text-sm"
 				>
 					Settings saved successfully.
 				</div>
@@ -652,7 +655,8 @@
 					id="theme"
 					name="theme"
 					value={theme}
-					onchange={(event) => onThemeChange((event.currentTarget as HTMLSelectElement).value as ThemePreference)}
+					onchange={(event) =>
+						onThemeChange((event.currentTarget as HTMLSelectElement).value as ThemePreference)}
 					class="bg-background border-input text-foreground focus:ring-ring rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:outline-none"
 				>
 					<option value="dark">Dark (default)</option>

@@ -16,11 +16,8 @@ const AUTH_NEXT_MAX_AGE = 600; // 10 minutes
 export const GET: RequestHandler = async ({ url, locals, cookies }) => {
 	const nextParam = safeNext(url.searchParams.get('next'));
 	// Prefer request origin when running on localhost so local dev works even if PUBLIC_APP_URL is set
-	const isLocalhost =
-		url.hostname === 'localhost' || url.hostname === '127.0.0.1';
-	const baseUrl = isLocalhost
-		? url.origin
-		: (env.PUBLIC_APP_URL?.replace(/\/$/, '') ?? url.origin);
+	const isLocalhost = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+	const baseUrl = isLocalhost ? url.origin : (env.PUBLIC_APP_URL?.replace(/\/$/, '') ?? url.origin);
 	const redirectTo = `${baseUrl}/auth/callback`;
 
 	if (nextParam) {
@@ -46,7 +43,11 @@ export const GET: RequestHandler = async ({ url, locals, cookies }) => {
 	}
 
 	if (data?.url) {
-		throw redirect(302, data.url);
+		const oauthUrl = new URL(data.url);
+		const publicSupabaseUrl = new URL(env.PUBLIC_SUPABASE_URL);
+		oauthUrl.protocol = publicSupabaseUrl.protocol;
+		oauthUrl.host = publicSupabaseUrl.host;
+		throw redirect(302, oauthUrl.toString());
 	}
 
 	throw redirect(303, '/auth/login?error=oauth_failed');

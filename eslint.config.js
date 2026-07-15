@@ -25,10 +25,20 @@ export default [
 		},
 		rules: {
 			// Disable rule that has false positives with resolve() usage
-			'svelte/no-navigation-without-resolve': 'off'
+			'svelte/no-navigation-without-resolve': 'off',
+			// SVG strings passed as component props intentionally use expression form.
+			'svelte/no-useless-mustaches': 'off'
 		}
 	},
 	{
-		ignores: ['build/', '.svelte-kit/', 'dist/', 'coverage/', 'coverage-*']
+		ignores: [
+			'build/',
+			'.svelte-kit/',
+			'dist/',
+			'coverage/',
+			'coverage-*',
+			'.cursor/skills/',
+			'.github/skills/'
+		]
 	}
 ];

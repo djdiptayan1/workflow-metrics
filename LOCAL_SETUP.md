@@ -16,7 +16,7 @@ for the local-Supabase workflow.
 - Docker Desktop (running) — both the Supabase CLI and this app's optional `docker compose` setup
   depend on it
 - [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started) (`brew
-  install supabase/tap/supabase` on macOS)
+install supabase/tap/supabase` on macOS)
 - A GitHub account with permission to create OAuth Apps and GitHub Apps
 
 ## 1. Clone and install
@@ -44,12 +44,12 @@ supabase status
 
 Keep this output handy — you'll copy values from it into `.env` in step 5. The relevant ones:
 
-| `supabase status` key | Fixed local value |
-|---|---|
-| `API_URL` | `http://127.0.0.1:54321` |
-| `ANON_KEY` | (long JWT, starts with `eyJ...`, role `anon`) |
-| `SERVICE_ROLE_KEY` | (long JWT, starts with `eyJ...`, role `service_role`) |
-| `STUDIO_URL` | `http://127.0.0.1:54323` — local dashboard, useful for inspecting tables |
+| `supabase status` key | Fixed local value                                                        |
+| --------------------- | ------------------------------------------------------------------------ |
+| `API_URL`             | `http://127.0.0.1:54321`                                                 |
+| `ANON_KEY`            | (long JWT, starts with `eyJ...`, role `anon`)                            |
+| `SERVICE_ROLE_KEY`    | (long JWT, starts with `eyJ...`, role `service_role`)                    |
+| `STUDIO_URL`          | `http://127.0.0.1:54323` — local dashboard, useful for inspecting tables |
 
 If some services (e.g. `pooler`, `imgproxy`) show as stopped, that's normal — this app doesn't use
 them. Only `db`, `auth`, `rest`, `kong`, `storage`, `realtime` need to be healthy:
@@ -129,6 +129,7 @@ values from step 4:
 PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
 PUBLIC_SUPABASE_ANON_KEY=<ANON_KEY from supabase status>
 SUPABASE_SERVICE_ROLE_KEY=<SERVICE_ROLE_KEY from supabase status>
+REDIS_URL=redis://127.0.0.1:6379
 
 GITHUB_APP_ID=<from step 4>
 GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
@@ -143,46 +144,45 @@ You have two options. Prefer option A unless you specifically need to run inside
 
 ### Option A — direct (simplest, no networking gotchas)
 
+Start a loopback-only Redis 8 container and keep `REDIS_URL=redis://127.0.0.1:6379` in `.env`:
+
+```bash
+docker run -d --name workflow-metrics-redis \
+  -p 127.0.0.1:6379:6379 \
+  redis:8-alpine redis-server --maxmemory 384mb --maxmemory-policy allkeys-lru
+```
+
 ```bash
 pnpm dev
 ```
 
 Open [http://localhost:5173](http://localhost:5173) and sign in with GitHub.
+Stop the standalone Redis container later with `docker rm -f workflow-metrics-redis`.
 
 ### Option B — Docker Compose
 
+For local Supabase, keep `PUBLIC_SUPABASE_URL=http://127.0.0.1:54321` for the browser and set
+`SUPABASE_INTERNAL_URL=http://host.docker.internal:54321` for the app container. Hosted Supabase
+URLs need no internal override.
+
 ```bash
-docker compose up --build
+CI_OBSERVE_IMAGE=workflow-metrics:local docker compose up -d --build
+docker compose ps
 ```
 
 Open [http://localhost:5173](http://localhost:5173).
 
 **Why this needs an extra step:** the app runs inside a container, but local Supabase runs on your
 host machine (accessible to containers as `host.docker.internal`, not `127.0.0.1` — inside a
-container, `127.0.0.1` means the container itself). `docker-compose.yml` already overrides
-`PUBLIC_SUPABASE_URL` to `http://host.docker.internal:54321` for the container.
-
-But the OAuth sign-in redirect is built server-side using that same URL and sent back to your
-**browser** — and by default your host machine can't resolve `host.docker.internal` either (that
-name only resolves automatically *inside* Docker containers). Add a one-time loopback entry so
-both sides agree on the name:
-
-```bash
-echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
-```
-
-No restart needed after adding it — just retry sign-in.
+container, `127.0.0.1` means the container itself).
 
 ## Troubleshooting
 
 **`[TypeError: fetch failed] ... ECONNREFUSED 127.0.0.1:54321` in `docker compose` logs**
 The container is trying to reach Supabase at `127.0.0.1`, which inside a container refers to
-itself. Confirm `docker-compose.yml` sets `PUBLIC_SUPABASE_URL` to
-`http://host.docker.internal:54321` (already done if you're on this repo's current
-`docker-compose.yml`) and that `supabase status` shows Supabase actually running.
-
-**Browser shows `DNS_PROBE_FINISHED_NXDOMAIN` for `host.docker.internal` after clicking sign in**
-Your Mac doesn't know that hostname. Add the `/etc/hosts` entry from step 6, option B above.
+itself. Confirm `.env` keeps `PUBLIC_SUPABASE_URL=http://127.0.0.1:54321`, adds
+`SUPABASE_INTERNAL_URL=http://host.docker.internal:54321`, and that `supabase status` shows
+Supabase running.
 
 **Sign-in redirects to GitHub but then fails / redirect_uri mismatch**
 The OAuth App's callback URL must be your local Supabase's callback
@@ -190,17 +190,29 @@ The OAuth App's callback URL must be your local Supabase's callback
 App (step 4) uses the `localhost:5173` callback.
 
 **Migrations seem out of date after pulling latest `main`**
+
 ```bash
 supabase stop
 supabase start
 ```
+
 `supabase start` re-applies all migrations under `supabase/migrations/` from scratch each time the
 local stack is (re)created.
+
+**Force a completely cold workflow-run import**
+
+```bash
+docker compose down -v
+CI_OBSERVE_IMAGE=workflow-metrics:local docker compose up -d --build
+```
+
+This deletes the disposable Redis cache. Normal `docker compose down` keeps it, so restarting or
+recreating the app does not require importing all workflow runs again.
 
 ## Verifying the setup works
 
 1. `supabase status` shows `db`, `auth`, `rest`, `kong` healthy.
-2. `pnpm dev` (or `docker compose up`) starts without fetch errors in the console.
+2. `pnpm dev` (or the local-image Compose command above) starts without fetch errors in the console.
 3. Visiting `http://localhost:5173` and clicking "Sign in with GitHub" redirects to GitHub, then
    back to the app, landing on the dashboard.
 4. Open [http://127.0.0.1:54323](http://127.0.0.1:54323) (Supabase Studio) and confirm a row

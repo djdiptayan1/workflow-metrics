@@ -1,5 +1,12 @@
 .git
 .svelte-kit
+build
+coverage
 node_modules
-.env
+.env*
+.DS_Store
+*.log
 PRODUCT_PLAN.md
+.claude
+.codex
+.cursor

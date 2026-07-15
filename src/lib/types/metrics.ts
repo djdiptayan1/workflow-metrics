@@ -125,7 +125,8 @@ export interface DashboardData {
 	activeWorkflows: number;
 	runTrend: RunDataPoint[];
 	workflowMetrics: WorkflowMetrics[];
-	recentRuns: RecentRun[];
+	/** Timing repair/exclusion counts for duration-derived metrics. */
+	timingDataQuality: { repairedRuns: number; excludedRuns: number };
 	/** Commits that modified workflow files in the chart window (for vertical markers). */
 	workflowFileCommits?: WorkflowFileCommit[];
 	dora?: DoraMetrics;
@@ -181,6 +182,8 @@ export interface WorkflowDetailData {
 	runHistory: RunDataPoint[];
 	jobBreakdown: JobBreakdown[];
 	recentRuns: RecentRun[];
+	/** Timing repair/exclusion counts for duration-derived metrics. */
+	timingDataQuality: { repairedRuns: number; excludedRuns: number };
 	/** Total raw minutes consumed by completed runs of this workflow in last 30 days. */
 	totalMinutes30d: number;
 	/** Billable minutes estimated from runner OS of sampled jobs (Linux ×1, Windows ×2, macOS ×10). */
@@ -245,7 +248,12 @@ export interface WorkflowJobEdge {
 	target: string;
 }
 
-export type OptimizationCategory = 'performance' | 'cost' | 'reliability' | 'security' | 'maintenance';
+export type OptimizationCategory =
+	| 'performance'
+	| 'cost'
+	| 'reliability'
+	| 'security'
+	| 'maintenance';
 export type OptimizationEffort = 'Low' | 'Medium' | 'High';
 
 export interface OptimizationItem {

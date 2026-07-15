@@ -1,571 +1,196 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import {
-	getCachedWorkflowRuns,
-	setCachedWorkflowRuns,
-	getCachedWorkflowDetailRuns,
-	setCachedWorkflowDetailRuns,
-	deleteExpiredWorkflowRunsCache,
-	deleteExpiredWorkflowDetailRunsCache
-} from './workflow-runs-cache';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GitHubWorkflowRun } from '$lib/types/github';
 import type { DashboardData } from '$lib/types/metrics';
 
-// Create a proper mock builder for Supabase chains
-const createMockSupabaseClient = () => {
-	const mockChains: Record<string, Record<string, unknown>> = {};
+vi.mock('$lib/server/redis', () => ({ getRedisClient: vi.fn() }));
 
-	const builder = {
-		from: vi.fn((table: string) => {
-			mockChains[table] = {
-				select: vi.fn((fields) => {
-					const chain = mockChains[table];
-					chain.selectedFields = fields;
-					return chain;
-				}),
-				eq: vi.fn((field, value) => {
-					const chain = mockChains[table];
-					const filters = (chain.filters as Record<string, unknown> | undefined) ?? {};
-					filters[field] = value;
-					chain.filters = filters;
-					return chain;
-				}),
-				lt: vi.fn((field, value) => {
-					const chain = mockChains[table];
-					const filters = (chain.filters as Record<string, unknown> | undefined) ?? {};
-					filters[field] = { op: 'lt', value };
-					chain.filters = filters;
-					return Promise.resolve({ error: null });
-				}),
-				delete: vi.fn(() => {
-					return {
-						lt: vi.fn((field, value) => {
-							const chain = mockChains[table];
-							chain.deleteFilter = { field, value };
-							return Promise.resolve({ error: null });
-						})
-					};
-				}),
-				upsert: vi.fn((data, options) => {
-					const chain = mockChains[table];
-					chain.upsertData = data;
-					chain.upsertOptions = options;
-					return {
-						select: vi.fn((fields) => {
-							chain.selectFields = fields;
-							return {
-								limit: vi.fn((n) => {
-									chain.limit = n;
-									return Promise.resolve({
-										data: [{ id: 1 }],
-										error: null
-									});
-								})
-							};
-						})
-					};
-				}),
-				maybeSingle: vi.fn(() => Promise.resolve({ data: null, error: null }))
-			};
-			return mockChains[table];
-		})
+import { getRedisClient } from '$lib/server/redis';
+import {
+	acquireSyncLock,
+	getCachedWorkflowFile,
+	getDashboardSnapshot,
+	getPaginatedRuns,
+	getWorkflowRuns,
+	markReconciled,
+	reconciliationDue,
+	releaseSyncLock,
+	setCachedWorkflowFile,
+	setDashboardSnapshot,
+	storeWorkflowRuns
+} from './workflow-runs-cache';
+
+class FakeRedis {
+	strings = new Map<string, { value: string; expires?: number }>();
+	hashes = new Map<string, Map<string, string>>();
+	zsets = new Map<string, Map<string, number>>();
+
+	async get(key: string) {
+		const entry = this.strings.get(key);
+		if (entry?.expires && entry.expires <= Date.now()) {
+			this.strings.delete(key);
+			return null;
+		}
+		return entry?.value ?? null;
+	}
+
+	async set(key: string, value: string, options: { NX?: boolean; PX?: number; EX?: number } = {}) {
+		if (options.NX && (await this.get(key)) !== null) return null;
+		this.strings.set(key, {
+			value,
+			expires: options.PX
+				? Date.now() + options.PX
+				: options.EX
+					? Date.now() + options.EX * 1000
+					: undefined
+		});
+		return 'OK';
+	}
+
+	async hSet(key: string, values: Record<string, string>) {
+		const hash = this.hashes.get(key) ?? new Map<string, string>();
+		for (const [field, value] of Object.entries(values)) hash.set(field, value);
+		this.hashes.set(key, hash);
+	}
+
+	async hmGet(key: string, fields: string[]) {
+		const hash = this.hashes.get(key);
+		return fields.map((field) => hash?.get(field) ?? null);
+	}
+
+	async del(keys: string | string[]) {
+		for (const key of Array.isArray(keys) ? keys : [keys]) {
+			this.strings.delete(key);
+			this.hashes.delete(key);
+			this.zsets.delete(key);
+		}
+	}
+
+	async zAdd(key: string, entries: Array<{ score: number; value: string }>) {
+		const set = this.zsets.get(key) ?? new Map<string, number>();
+		for (const entry of entries) set.set(entry.value, entry.score);
+		this.zsets.set(key, set);
+	}
+
+	async zRange(key: string, start: number, end: number, options: { REV?: boolean } = {}) {
+		let entries = [...(this.zsets.get(key)?.entries() ?? [])].sort(
+			(a, b) => a[1] - b[1] || a[0].localeCompare(b[0])
+		);
+		if (options.REV) entries = entries.reverse();
+		const finalEnd = end < 0 ? entries.length : end + 1;
+		return entries.slice(start, finalEnd).map(([value]) => value);
+	}
+
+	async zCard(key: string) {
+		return this.zsets.get(key)?.size ?? 0;
+	}
+
+	async eval(_script: string, args: { keys: string[]; arguments: string[] }) {
+		const [key] = args.keys;
+		if ((await this.get(key)) !== args.arguments[0]) return 0;
+		this.strings.delete(key);
+		return 1;
+	}
+}
+
+function run(id: number, workflowId = 1): GitHubWorkflowRun {
+	const started = new Date(Date.UTC(2026, 0, 1, 0, id % 60)).toISOString();
+	return {
+		id,
+		name: 'Build',
+		workflow_id: workflowId,
+		status: 'completed',
+		conclusion: 'success',
+		head_branch: 'main',
+		head_sha: String(id),
+		run_number: id,
+		run_attempt: 1,
+		event: 'push',
+		created_at: started,
+		updated_at: new Date(Date.parse(started) + 60_000).toISOString(),
+		run_started_at: started,
+		effective_completed_at: new Date(Date.parse(started) + 60_000).toISOString(),
+		timing_quality: 'original',
+		html_url: `https://github.test/runs/${id}`,
+		actor: null
 	};
+}
 
-	return { builder, mockChains };
-};
+const dashboard = {
+	owner: 'acme',
+	repo: 'app',
+	totalRuns: 1,
+	doraWorkflowIds: [],
+	timingDataQuality: { repairedRuns: 0, excludedRuns: 0 }
+} as unknown as DashboardData;
 
-describe('deleteExpiredWorkflowRunsCache', () => {
-	it('deletes rows older than retention period', async () => {
-		const { builder, mockChains } = createMockSupabaseClient();
-		await deleteExpiredWorkflowRunsCache(builder as never);
-		expect(builder.from).toHaveBeenCalledWith('workflow_runs_cache');
-		expect(mockChains['workflow_runs_cache'].deleteFilter).toBeDefined();
-		const deleteFilter = mockChains['workflow_runs_cache'].deleteFilter as
-			| { field: string; value: unknown }
-			| undefined;
-		expect(deleteFilter?.field).toBe('fetched_at');
-	});
-});
-
-describe('deleteExpiredWorkflowDetailRunsCache', () => {
-	it('deletes rows older than retention period', async () => {
-		const { builder, mockChains } = createMockSupabaseClient();
-		await deleteExpiredWorkflowDetailRunsCache(builder as never);
-		expect(builder.from).toHaveBeenCalledWith('workflow_detail_runs_cache');
-		expect(mockChains['workflow_detail_runs_cache'].deleteFilter).toBeDefined();
-	});
-});
-
-describe('getCachedWorkflowRuns', () => {
-	const mockRuns: GitHubWorkflowRun[] = [
-		{ id: 1, status: 'completed', conclusion: 'success' } as GitHubWorkflowRun
-	];
+describe('Redis workflow cache', () => {
+	let redis: FakeRedis;
 
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.useRealTimers();
+		redis = new FakeRedis();
+		vi.mocked(getRedisClient).mockResolvedValue(redis as never);
 	});
 
-	it('returns fresh cached data', async () => {
-		const dashboardData = { owner: 'owner', repo: 'repo', totalRuns: 1 } as DashboardData;
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				select: vi.fn().mockReturnValue({
-					eq: vi.fn().mockReturnValue({
-						eq: vi.fn().mockReturnValue({
-							eq: vi.fn().mockReturnValue({
-								eq: vi.fn().mockReturnValue({
-									maybeSingle: vi.fn().mockResolvedValue({
-										data: {
-											runs: mockRuns,
-											dashboard_data: dashboardData,
-											fetched_at: new Date().toISOString()
-										},
-										error: null
-									})
-								})
-							})
-						})
-					})
-				})
-			})
-		};
-
-		const result = await getCachedWorkflowRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			'2024-01-01'
-		);
-
-		expect(result).not.toBeNull();
-		expect(result?.runs).toEqual(mockRuns);
-		expect(result?.dashboardData).toEqual(dashboardData);
-		expect(result?.isStale).toBe(false);
-	});
-
-	it('returns stale data when cache is older than TTL', async () => {
-		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				select: vi.fn().mockReturnValue({
-					eq: vi.fn().mockReturnValue({
-						eq: vi.fn().mockReturnValue({
-							eq: vi.fn().mockReturnValue({
-								eq: vi.fn().mockReturnValue({
-									maybeSingle: vi.fn().mockResolvedValue({
-										data: { runs: mockRuns, fetched_at: twoHoursAgo },
-										error: null
-									})
-								})
-							})
-						})
-					})
-				})
-			})
-		};
-
-		const result = await getCachedWorkflowRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			'2024-01-01'
-		);
-
-		expect(result?.isStale).toBe(true);
-	});
-
-	it('returns null when cache is too old (past stale TTL)', async () => {
-		const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				select: vi.fn().mockReturnValue({
-					eq: vi.fn().mockReturnValue({
-						eq: vi.fn().mockReturnValue({
-							eq: vi.fn().mockReturnValue({
-								eq: vi.fn().mockReturnValue({
-									maybeSingle: vi.fn().mockResolvedValue({
-										data: { runs: mockRuns, fetched_at: fiveHoursAgo },
-										error: null
-									})
-								})
-							})
-						})
-					})
-				})
-			})
-		};
-
-		const result = await getCachedWorkflowRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			'2024-01-01'
-		);
-
-		expect(result).toBeNull();
-	});
-
-	it('returns null when no cache entry found', async () => {
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				select: vi.fn().mockReturnValue({
-					eq: vi.fn().mockReturnValue({
-						eq: vi.fn().mockReturnValue({
-							eq: vi.fn().mockReturnValue({
-								eq: vi.fn().mockReturnValue({
-									maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null })
-								})
-							})
-						})
-					})
-				})
-			})
-		};
-
-		const result = await getCachedWorkflowRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			'2024-01-01'
-		);
-
-		expect(result).toBeNull();
-	});
-
-	it('returns null and logs warning on error', async () => {
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				select: vi.fn().mockReturnValue({
-					eq: vi.fn().mockReturnValue({
-						eq: vi.fn().mockReturnValue({
-							eq: vi.fn().mockReturnValue({
-								eq: vi.fn().mockReturnValue({
-									maybeSingle: vi.fn().mockResolvedValue({
-										data: null,
-										error: { message: 'Connection failed', code: '500' }
-									})
-								})
-							})
-						})
-					})
-				})
-			})
-		};
-		const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-		const result = await getCachedWorkflowRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			'2024-01-01'
-		);
-
-		expect(result).toBeNull();
-		expect(consoleSpy).toHaveBeenCalled();
-
-		consoleSpy.mockRestore();
-	});
-
-	it('queries with correct parameters', async () => {
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				select: vi.fn().mockReturnValue({
-					eq: vi.fn().mockReturnValue({
-						eq: vi.fn().mockReturnValue({
-							eq: vi.fn().mockReturnValue({
-								eq: vi.fn().mockReturnValue({
-									maybeSingle: vi.fn().mockResolvedValue({
-										data: { runs: [], fetched_at: new Date().toISOString() },
-										error: null
-									})
-								})
-							})
-						})
-					})
-				})
-			})
-		};
-
-		await getCachedWorkflowRuns(mockSupabase as never, 'user-123', 'owner', 'repo', '2024-01-01');
-
-		expect(mockSupabase.from).toHaveBeenCalledWith('workflow_runs_cache');
-	});
-});
-
-describe('setCachedWorkflowRuns', () => {
-	const mockRuns: GitHubWorkflowRun[] = [
-		{ id: 1, status: 'completed', conclusion: 'success' } as GitHubWorkflowRun
-	];
-
-	it('successfully stores workflow runs', async () => {
-		const dashboardData = { owner: 'owner', repo: 'repo', totalRuns: 1 } as DashboardData;
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				upsert: vi.fn().mockReturnValue({
-					select: vi.fn().mockReturnValue({
-						limit: vi.fn().mockResolvedValue({
-							data: [{ id: 1 }],
-							error: null
-						})
-					})
-				})
-			})
-		};
-
-		const result = await setCachedWorkflowRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			'2024-01-01',
-			mockRuns,
-			dashboardData
-		);
-
-		expect(result.ok).toBe(true);
-		const upsertCall = mockSupabase.from('workflow_runs_cache').upsert.mock.calls[0];
-		expect(upsertCall[0]).toMatchObject({
-			user_id: 'user-123',
-			owner: 'owner',
-			name: 'repo',
-			window_start: '2024-01-01',
-			runs: mockRuns,
-			dashboard_data: dashboardData
+	it('serves fresh snapshots and rejects a different DORA selection', async () => {
+		await setDashboardSnapshot('u1', 'acme', 'app', '30', dashboard, []);
+		expect(await getDashboardSnapshot('u1', 'acme', 'app', '30', 300_000, [])).toMatchObject({
+			isStale: false,
+			dashboardData: dashboard
 		});
-		expect(upsertCall[1]).toMatchObject({
-			onConflict: 'user_id,owner,name,window_start',
-			ignoreDuplicates: false
+		expect(await getDashboardSnapshot('u1', 'acme', 'app', '30', 300_000, [7])).toBeNull();
+	});
+
+	it('marks snapshots stale after the configured freshness without discarding them', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+		await setDashboardSnapshot('u1', 'acme', 'app', '30', dashboard, []);
+		vi.advanceTimersByTime(301_000);
+		expect(await getDashboardSnapshot('u1', 'acme', 'app', '30', 300_000, [])).toMatchObject({
+			isStale: true
 		});
 	});
 
-	it('returns error on failure', async () => {
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				upsert: vi.fn().mockReturnValue({
-					select: vi.fn().mockReturnValue({
-						limit: vi.fn().mockResolvedValue({
-							data: null,
-							error: { message: 'Insert failed' }
-						})
-					})
-				})
-			})
-		};
-		const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+	it('isolates lookbacks and paginates 26k runs without a bulk response', async () => {
+		const runs = Array.from({ length: 26_000 }, (_, index) => run(index + 1, index % 3));
+		await storeWorkflowRuns('u1', 'acme', 'app', 'all', runs);
+		await storeWorkflowRuns('u1', 'acme', 'app', '7', runs.slice(0, 7));
+		const page = await getPaginatedRuns('u1', 'acme', 'app', 'all', 2, 50);
+		expect(page.items).toHaveLength(50);
+		expect(page.total).toBe(26_000);
+		expect(await getWorkflowRuns('u1', 'acme', 'app', '7')).toHaveLength(7);
+		expect(await getWorkflowRuns('u2', 'acme', 'app', 'all')).toEqual([]);
+	}, 15_000);
 
-		const result = await setCachedWorkflowRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			'2024-01-01',
-			mockRuns
-		);
-
-		expect(result.ok).toBe(false);
-		expect(result.error).toBe('Insert failed');
-
-		consoleSpy.mockRestore();
+	it('uses token-safe single-flight locks', async () => {
+		const token = await acquireSyncLock('u1', 'acme', 'app', '30');
+		expect(token).toBeTruthy();
+		expect(await acquireSyncLock('u1', 'acme', 'app', '30')).toBeNull();
+		await releaseSyncLock('u1', 'acme', 'app', '30', 'wrong-token');
+		expect(await acquireSyncLock('u1', 'acme', 'app', '30')).toBeNull();
+		await releaseSyncLock('u1', 'acme', 'app', '30', token!);
+		expect(await acquireSyncLock('u1', 'acme', 'app', '30')).toBeTruthy();
 	});
 
-	it('includes fetched_at timestamp', async () => {
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				upsert: vi.fn().mockReturnValue({
-					select: vi.fn().mockReturnValue({
-						limit: vi.fn().mockResolvedValue({
-							data: [{ id: 1 }],
-							error: null
-						})
-					})
-				})
-			})
-		};
-
-		await setCachedWorkflowRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			'2024-01-01',
-			mockRuns
-		);
-
-		const upsertData = mockSupabase.from('workflow_runs_cache').upsert.mock.calls[0][0];
-		expect(upsertData.fetched_at).toBeDefined();
-		expect(new Date(upsertData.fetched_at)).toBeInstanceOf(Date);
-	});
-});
-
-describe('getCachedWorkflowDetailRuns', () => {
-	const mockRuns: GitHubWorkflowRun[] = [
-		{ id: 1, workflow_id: 123, status: 'completed', conclusion: 'success' } as GitHubWorkflowRun
-	];
-
-	it('returns fresh cached data for workflow detail', async () => {
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				select: vi.fn().mockReturnValue({
-					eq: vi.fn().mockReturnValue({
-						eq: vi.fn().mockReturnValue({
-							eq: vi.fn().mockReturnValue({
-								eq: vi.fn().mockReturnValue({
-									eq: vi.fn().mockReturnValue({
-										maybeSingle: vi.fn().mockResolvedValue({
-											data: { runs: mockRuns, fetched_at: new Date().toISOString() },
-											error: null
-										})
-									})
-								})
-							})
-						})
-					})
-				})
-			})
-		};
-
-		const result = await getCachedWorkflowDetailRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			123,
-			'2024-01-01'
-		);
-
-		expect(result).not.toBeNull();
-		expect(result?.runs).toEqual(mockRuns);
-		expect(result?.isStale).toBe(false);
+	it('tracks reconciliation and caches missing workflow files', async () => {
+		expect(await reconciliationDue('u1', 'acme', 'app', '30')).toBe(true);
+		await markReconciled('u1', 'acme', 'app', '30');
+		expect(await reconciliationDue('u1', 'acme', 'app', '30')).toBe(false);
+		await setCachedWorkflowFile('u1', 'acme', 'app', '.github/workflows/deleted.yml', null);
+		expect(
+			await getCachedWorkflowFile('u1', 'acme', 'app', '.github/workflows/deleted.yml')
+		).toEqual({ hit: true, content: null });
 	});
 
-	it('queries workflow_detail_runs_cache table', async () => {
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				select: vi.fn().mockReturnValue({
-					eq: vi.fn().mockReturnValue({
-						eq: vi.fn().mockReturnValue({
-							eq: vi.fn().mockReturnValue({
-								eq: vi.fn().mockReturnValue({
-									eq: vi.fn().mockReturnValue({
-										maybeSingle: vi.fn().mockResolvedValue({
-											data: { runs: [], fetched_at: new Date().toISOString() },
-											error: null
-										})
-									})
-								})
-							})
-						})
-					})
-				})
-			})
-		};
-
-		await getCachedWorkflowDetailRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			123,
-			'2024-01-01'
-		);
-
-		expect(mockSupabase.from).toHaveBeenCalledWith('workflow_detail_runs_cache');
-	});
-});
-
-describe('setCachedWorkflowDetailRuns', () => {
-	const mockRuns: GitHubWorkflowRun[] = [
-		{ id: 1, workflow_id: 123, status: 'completed', conclusion: 'success' } as GitHubWorkflowRun
-	];
-
-	it('successfully stores workflow detail runs', async () => {
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				upsert: vi.fn().mockReturnValue({
-					select: vi.fn().mockReturnValue({
-						limit: vi.fn().mockResolvedValue({
-							data: [{ id: 1 }],
-							error: null
-						})
-					})
-				})
-			})
-		};
-
-		const result = await setCachedWorkflowDetailRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			123,
-			'2024-01-01',
-			mockRuns
-		);
-
-		expect(result.ok).toBe(true);
-		expect(mockSupabase.from).toHaveBeenCalledWith('workflow_detail_runs_cache');
+	it('prunes workflow indexes during a full reconciliation', async () => {
+		await storeWorkflowRuns('u1', 'acme', 'app', '30', [run(1, 10), run(2, 20)]);
+		await storeWorkflowRuns('u1', 'acme', 'app', '30', [run(3, 10)]);
+		expect(await getWorkflowRuns('u1', 'acme', 'app', '30', 20)).toEqual([]);
+		expect(await getWorkflowRuns('u1', 'acme', 'app', '30', 10)).toHaveLength(1);
 	});
 
-	it('includes workflow_id in upsert', async () => {
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				upsert: vi.fn().mockReturnValue({
-					select: vi.fn().mockReturnValue({
-						limit: vi.fn().mockResolvedValue({
-							data: [{ id: 1 }],
-							error: null
-						})
-					})
-				})
-			})
-		};
-
-		await setCachedWorkflowDetailRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			123,
-			'2024-01-01',
-			mockRuns
-		);
-
-		const upsertData = mockSupabase.from('workflow_detail_runs_cache').upsert.mock.calls[0][0];
-		expect(upsertData.workflow_id).toBe(123);
-	});
-
-	it('uses correct onConflict clause', async () => {
-		const mockSupabase = {
-			from: vi.fn().mockReturnValue({
-				upsert: vi.fn().mockReturnValue({
-					select: vi.fn().mockReturnValue({
-						limit: vi.fn().mockResolvedValue({
-							data: [{ id: 1 }],
-							error: null
-						})
-					})
-				})
-			})
-		};
-
-		await setCachedWorkflowDetailRuns(
-			mockSupabase as never,
-			'user-123',
-			'owner',
-			'repo',
-			123,
-			'2024-01-01',
-			mockRuns
-		);
-
-		const upsertOptions = mockSupabase.from('workflow_detail_runs_cache').upsert.mock.calls[0][1];
-		expect(upsertOptions).toMatchObject({
-			onConflict: 'user_id,owner,name,workflow_id,window_start',
-			ignoreDuplicates: false
-		});
+	it('propagates Redis outages so routes can return 503', async () => {
+		vi.mocked(getRedisClient).mockRejectedValueOnce(new Error('offline'));
+		await expect(getWorkflowRuns('u1', 'acme', 'app', 'all')).rejects.toThrow('offline');
 	});
 });

@@ -39,18 +39,16 @@ function concatBytes(...arrays: Uint8Array[]): Uint8Array {
 function pkcs1ToPkcs8(pkcs1: Uint8Array): Uint8Array {
 	// AlgorithmIdentifier: SEQUENCE { OID rsaEncryption, NULL }
 	const algorithmIdentifier = new Uint8Array([
-		0x30, 0x0d,
-		0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
-		0x05, 0x00
+		0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00
 	]);
 	const version = new Uint8Array([0x02, 0x01, 0x00]); // INTEGER 0
-	const privateKeyOctet = buildTlv(0x04, pkcs1);       // OCTET STRING
+	const privateKeyOctet = buildTlv(0x04, pkcs1); // OCTET STRING
 	const inner = concatBytes(version, algorithmIdentifier, privateKeyOctet);
-	return buildTlv(0x30, inner);                         // outer SEQUENCE
+	return buildTlv(0x30, inner); // outer SEQUENCE
 }
 
 // ---------------------------------------------------------------------------
-// JWT helpers (RS256 via Web Crypto — Cloudflare Workers compatible)
+// JWT helpers (RS256 via Web Crypto).
 // ---------------------------------------------------------------------------
 
 function b64url(data: Uint8Array): string {
@@ -62,7 +60,7 @@ function b64url(data: Uint8Array): string {
 
 /** Import a PEM private key (PKCS#1 or PKCS#8) for RS256 signing. */
 async function importPrivateKey(pem: string): Promise<CryptoKey> {
-	// Cloudflare secrets may store newlines as literal '\n'
+	// Environment-variable secrets may store newlines as literal '\n'.
 	const normalized = pem.replace(/\\n/g, '\n').trim();
 
 	const isPkcs1 = normalized.includes('BEGIN RSA PRIVATE KEY');

@@ -39,7 +39,7 @@
 	let doraRefreshController: AbortController | null = null;
 
 	// Progress state for the SSE loading bar (only used during cache-miss fetches)
-	type LoadPhase = 'connecting' | 'fetching' | 'computing' | null;
+	type LoadPhase = 'connecting' | 'fetching' | 'repairing' | 'computing' | null;
 	let loadPhase = $state<LoadPhase>(null);
 	let progressFetched = $state(0);
 	let progressTotal = $state(0);
@@ -144,6 +144,8 @@
 					const p = payload as { phase: string; fetched?: number; total?: number };
 					if (p.phase === 'fetching' && p.fetched !== undefined && p.total !== undefined) {
 						onProgress?.(p.fetched, p.total);
+					} else if (p.phase === 'repairing') {
+						loadPhase = 'repairing';
 					} else if (p.phase === 'computing') {
 						loadPhase = 'computing';
 					}
@@ -162,7 +164,7 @@
 	$effect(() => {
 		const owner = data.selectedRepo.owner;
 		const name = data.selectedRepo.name;
-		retryToken; // dependency only — re-runs this effect when Retry is clicked
+		void retryToken; // dependency only — re-runs this effect when Retry is clicked
 
 		initialLoading = true;
 		isStale = false;
@@ -402,6 +404,8 @@
 							Connecting to GitHub…
 						{:else if loadPhase === 'fetching'}
 							Loading workflow runs · {progressFetched.toLocaleString()} / {progressTotal.toLocaleString()}
+						{:else if loadPhase === 'repairing'}
+							Repairing workflow timing data…
 						{:else if loadPhase === 'computing'}
 							Analyzing metrics…
 						{/if}
@@ -451,6 +455,17 @@
 			</div>
 		{/if}
 	{:else}
+		{#if dashboardData.timingDataQuality.excludedRuns > 0}
+			<div
+				class="text-foreground rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm"
+				role="status"
+			>
+				Duration and minutes metrics are partial: {dashboardData.timingDataQuality.excludedRuns.toLocaleString()}
+				completed {dashboardData.timingDataQuality.excludedRuns === 1 ? 'run was' : 'runs were'}
+				excluded because GitHub did not provide a valid completion time. Counts and rates still include
+				{dashboardData.timingDataQuality.excludedRuns === 1 ? 'it' : 'them'}.
+			</div>
+		{/if}
 		<!-- Metric cards -->
 		<div class="flex flex-wrap gap-4">
 			<MetricCard
@@ -912,9 +927,10 @@
 		/>
 		<!-- Recent runs -->
 		<RecentRuns
-			runs={dashboardData.recentRuns}
 			owner={dashboardData.owner}
 			repo={dashboardData.repo}
+			serverPagination
+			lookback={data.actionsLookback}
 		/>
 	{/if}
 </div>

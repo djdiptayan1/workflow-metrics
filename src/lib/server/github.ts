@@ -21,6 +21,13 @@ import type {
 	WorkflowJobEdge
 } from '$lib/types/metrics';
 import { buildJobGraphFromWorkflow } from '$lib/server/workflow-graph';
+import {
+	getRunTiming,
+	normalizeWorkflowRun,
+	repairWorkflowRunTimings,
+	summarizeTimingQuality
+} from '$lib/server/run-timing';
+import { getCachedWorkflowFile, setCachedWorkflowFile } from '$lib/server/workflow-runs-cache';
 
 export function createOctokit(accessToken: string): Octokit {
 	return new Octokit({ auth: accessToken });
@@ -79,11 +86,23 @@ export async function fetchWorkflowRuns(
 		page: options.page ?? 1,
 		...(options.created ? { created: options.created } : {})
 	});
-	return data.workflow_runs as unknown as GitHubWorkflowRun[];
+	return (data.workflow_runs as unknown as GitHubWorkflowRun[]).map(normalizeWorkflowRun);
 }
 
 export type TimingCollector = (label: string, ms: number, meta?: Record<string, number>) => void;
 export type ProgressCallback = (fetched: number, total: number, page: number) => void;
+
+function createdCutoff(created?: string): number | null {
+	if (!created?.startsWith('>=')) return null;
+	const parsed = Date.parse(created.slice(2));
+	return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isBeforeCutoff(run: GitHubWorkflowRun, cutoff: number | null): boolean {
+	if (cutoff === null) return false;
+	const createdAt = Date.parse(run.created_at);
+	return Number.isFinite(createdAt) && createdAt < cutoff;
+}
 
 /** Fetches all workflow runs for the repo in the given date range by paginating through the API. */
 export async function fetchAllWorkflowRunsForRepo(
@@ -97,6 +116,8 @@ export async function fetchAllWorkflowRunsForRepo(
 	const allRuns: GitHubWorkflowRun[] = [];
 	let page = 1;
 	let totalCount: number | null = null;
+	let fetched = 0;
+	const cutoff = createdCutoff(created);
 	const totalStart = typeof performance !== 'undefined' ? performance.now() : 0;
 	while (true) {
 		const pageStart = typeof performance !== 'undefined' ? performance.now() : 0;
@@ -104,10 +125,11 @@ export async function fetchAllWorkflowRunsForRepo(
 			owner,
 			repo,
 			per_page: 100,
-			page,
-			...(created ? { created } : {})
+			page
 		});
-		const runs = (data.workflow_runs ?? []) as unknown as GitHubWorkflowRun[];
+		const runs = ((data.workflow_runs ?? []) as unknown as GitHubWorkflowRun[]).map(
+			normalizeWorkflowRun
+		);
 		// Capture total_count from first page response
 		if (totalCount === null) {
 			totalCount = typeof data.total_count === 'number' ? data.total_count : runs.length;
@@ -117,9 +139,10 @@ export async function fetchAllWorkflowRunsForRepo(
 				runsInPage: runs.length
 			});
 		}
-		allRuns.push(...runs);
-		onProgress?.(allRuns.length, totalCount, page);
-		if (runs.length < 100) break;
+		fetched += runs.length;
+		allRuns.push(...runs.filter((run) => !isBeforeCutoff(run, cutoff)));
+		onProgress?.(fetched, totalCount, page);
+		if (runs.length < 100 || runs.some((run) => isBeforeCutoff(run, cutoff))) break;
 		page++;
 	}
 	if (onTiming && typeof performance !== 'undefined') {
@@ -129,6 +152,58 @@ export async function fetchAllWorkflowRunsForRepo(
 		});
 	}
 	return allRuns;
+}
+
+function listingSignature(run: GitHubWorkflowRun): string {
+	return [run.run_attempt ?? 1, run.status ?? '', run.conclusion ?? '', run.updated_at ?? ''].join(
+		':'
+	);
+}
+
+/** Fetch newest pages until GitHub returns one complete page unchanged from Redis. */
+export async function fetchIncrementalWorkflowRunsForRepo(
+	octokit: Octokit,
+	owner: string,
+	repo: string,
+	cachedRuns: GitHubWorkflowRun[],
+	created?: string,
+	onProgress?: ProgressCallback
+): Promise<GitHubWorkflowRun[]> {
+	const cached = new Map(cachedRuns.map((run) => [run.id, run]));
+	let page = 1;
+	let fetched = 0;
+	const cutoff = createdCutoff(created);
+	while (true) {
+		const { data } = await octokit.rest.actions.listWorkflowRunsForRepo({
+			owner,
+			repo,
+			per_page: 100,
+			page
+		});
+		const pageRuns = ((data.workflow_runs ?? []) as unknown as GitHubWorkflowRun[]).map(
+			normalizeWorkflowRun
+		);
+		fetched += pageRuns.length;
+		onProgress?.(fetched, data.total_count ?? fetched, page);
+		const relevantRuns = pageRuns.filter((run) => !isBeforeCutoff(run, cutoff));
+		const unchanged =
+			pageRuns.length === 100 &&
+			relevantRuns.every((run) => {
+				const previous = cached.get(run.id);
+				return previous && listingSignature(previous) === listingSignature(run);
+			});
+		for (const run of relevantRuns) {
+			const previous = cached.get(run.id);
+			if (!previous || listingSignature(previous) !== listingSignature(run))
+				cached.set(run.id, run);
+		}
+		if (pageRuns.length < 100 || pageRuns.some((run) => isBeforeCutoff(run, cutoff)) || unchanged)
+			break;
+		page++;
+	}
+	return [...cached.values()].sort(
+		(a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id
+	);
 }
 
 export async function fetchSingleWorkflowRuns(
@@ -146,7 +221,7 @@ export async function fetchSingleWorkflowRuns(
 		page: options.page ?? 1,
 		...(options.created ? { created: options.created } : {})
 	});
-	return data.workflow_runs as unknown as GitHubWorkflowRun[];
+	return (data.workflow_runs as unknown as GitHubWorkflowRun[]).map(normalizeWorkflowRun);
 }
 
 /** Fetches all workflow runs for a single workflow in the given date range by paginating. */
@@ -159,21 +234,67 @@ export async function fetchAllSingleWorkflowRuns(
 ): Promise<GitHubWorkflowRun[]> {
 	const allRuns: GitHubWorkflowRun[] = [];
 	let page = 1;
+	const cutoff = createdCutoff(created);
 	while (true) {
 		const { data } = await octokit.rest.actions.listWorkflowRuns({
 			owner,
 			repo,
 			workflow_id: workflowId,
 			per_page: 100,
-			page,
-			...(created ? { created } : {})
+			page
 		});
-		const runs = (data.workflow_runs ?? []) as unknown as GitHubWorkflowRun[];
-		allRuns.push(...runs);
-		if (runs.length < 100) break;
+		const runs = ((data.workflow_runs ?? []) as unknown as GitHubWorkflowRun[]).map(
+			normalizeWorkflowRun
+		);
+		allRuns.push(...runs.filter((run) => !isBeforeCutoff(run, cutoff)));
+		if (runs.length < 100 || runs.some((run) => isBeforeCutoff(run, cutoff))) break;
 		page++;
 	}
 	return allRuns;
+}
+
+/** Fetch newest workflow pages until one complete page is unchanged from Redis. */
+export async function fetchIncrementalSingleWorkflowRuns(
+	octokit: Octokit,
+	owner: string,
+	repo: string,
+	workflowId: number,
+	cachedRuns: GitHubWorkflowRun[],
+	created?: string
+): Promise<GitHubWorkflowRun[]> {
+	const cached = new Map(cachedRuns.map((run) => [run.id, run]));
+	const cutoff = createdCutoff(created);
+	let page = 1;
+	while (true) {
+		const { data } = await octokit.rest.actions.listWorkflowRuns({
+			owner,
+			repo,
+			workflow_id: workflowId,
+			per_page: 100,
+			page
+		});
+		const pageRuns = ((data.workflow_runs ?? []) as unknown as GitHubWorkflowRun[]).map(
+			normalizeWorkflowRun
+		);
+		const relevantRuns = pageRuns.filter((run) => !isBeforeCutoff(run, cutoff));
+		const unchanged =
+			pageRuns.length === 100 &&
+			relevantRuns.every((run) => {
+				const previous = cached.get(run.id);
+				return previous && listingSignature(previous) === listingSignature(run);
+			});
+		for (const run of relevantRuns) {
+			const previous = cached.get(run.id);
+			if (!previous || listingSignature(previous) !== listingSignature(run))
+				cached.set(run.id, run);
+		}
+		if (pageRuns.length < 100 || pageRuns.some((run) => isBeforeCutoff(run, cutoff)) || unchanged)
+			break;
+		page++;
+	}
+	return [...cached.values()].sort(
+		(a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id
+	);
 }
 
 export async function fetchJobsForRun(
@@ -284,7 +405,7 @@ function computeWorkflowMetrics(
 		workflowRuns.length > 0 ? Math.round((skippedCount / workflowRuns.length) * 1000) / 10 : 0;
 
 	const durations = completed
-		.map((r) => computeDurationMs(r.run_started_at, r.updated_at))
+		.map((r) => getRunTiming(r).durationMs)
 		.filter((d): d is number => d !== null)
 		.sort((a, b) => a - b);
 
@@ -309,7 +430,9 @@ function computeWorkflowMetrics(
 		avgDurationMs: Math.round(avgDurationMs),
 		p50DurationMs: Math.round(percentile(sortedAsc, 50)),
 		p95DurationMs: Math.round(percentile(sortedAsc, 95)),
-		lastRunAt: lastRun?.updated_at ?? null,
+		lastRunAt: lastRun
+			? (getRunTiming(lastRun).completedAt ?? getRunTiming(lastRun).startedAt)
+			: null,
 		lastConclusion: lastRun?.conclusion ?? null
 	};
 }
@@ -325,7 +448,7 @@ function buildRunTrend(runs: GitHubWorkflowRun[], days = 30): RunDataPoint[] {
 	}
 
 	for (const run of runs) {
-		const key = run.updated_at.slice(0, 10);
+		const key = (getRunTiming(run).startedAt ?? run.created_at).slice(0, 10);
 		if (!map.has(key)) continue;
 		const point = map.get(key)!;
 		point.total++;
@@ -363,11 +486,13 @@ function computeDoraMetrics(runs: GitHubWorkflowRun[], doraWorkflowIds?: number[
 	const changeFailureRate =
 		deployCount > 0 ? Math.round((failureCount / deployCount) * 1000) / 10 : 0;
 
-	// Lead time: commit → run end, or created_at → updated_at as proxy
+	// Lead time: commit → stable run end, or created_at → stable run end as proxy.
 	const leadTimesMs: number[] = [];
 	let usedCommitTimestamp = false;
 	for (const r of successOrFailure) {
-		const endMs = new Date(r.updated_at).getTime();
+		const completedAt = getRunTiming(r).completedAt;
+		if (!completedAt) continue;
+		const endMs = new Date(completedAt).getTime();
 		const startMs = r.head_commit?.timestamp
 			? new Date(r.head_commit.timestamp).getTime()
 			: new Date(r.created_at).getTime();
@@ -386,17 +511,23 @@ function computeDoraMetrics(runs: GitHubWorkflowRun[], doraWorkflowIds?: number[
 				)
 			: null;
 
-	// MTTR: for each failure, time until next success (by updated_at)
-	const byUpdatedAt = [...completed].sort(
-		(a, b) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime()
-	);
+	// MTTR: for each timed failure, time until the next timed success.
+	const byCompletedAt = completed
+		.filter((run) => getRunTiming(run).completedAt !== null)
+		.sort(
+			(a, b) =>
+				new Date(getRunTiming(a).completedAt!).getTime() -
+				new Date(getRunTiming(b).completedAt!).getTime()
+		);
 	const recoveryTimesMs: number[] = [];
-	for (let i = 0; i < byUpdatedAt.length; i++) {
-		if (byUpdatedAt[i].conclusion !== 'failure') continue;
-		const failureEnd = new Date(byUpdatedAt[i].updated_at).getTime();
-		for (let j = i + 1; j < byUpdatedAt.length; j++) {
-			if (byUpdatedAt[j].conclusion === 'success') {
-				recoveryTimesMs.push(new Date(byUpdatedAt[j].updated_at).getTime() - failureEnd);
+	for (let i = 0; i < byCompletedAt.length; i++) {
+		if (byCompletedAt[i].conclusion !== 'failure') continue;
+		const failureEnd = new Date(getRunTiming(byCompletedAt[i]).completedAt!).getTime();
+		for (let j = i + 1; j < byCompletedAt.length; j++) {
+			if (byCompletedAt[j].conclusion === 'success') {
+				recoveryTimesMs.push(
+					new Date(getRunTiming(byCompletedAt[j]).completedAt!).getTime() - failureEnd
+				);
 				break;
 			}
 		}
@@ -424,8 +555,8 @@ function runsToRecentRuns(runs: GitHubWorkflowRun[], workflows: GitHubWorkflow[]
 		status: r.status,
 		conclusion: r.conclusion,
 		branch: r.head_branch,
-		durationMs: computeDurationMs(r.run_started_at, r.updated_at),
-		startedAt: r.run_started_at ?? r.created_at,
+		durationMs: getRunTiming(r).durationMs,
+		startedAt: getRunTiming(r).startedAt,
 		htmlUrl: r.html_url,
 		actor: r.actor?.login ?? null,
 		actorAvatar: r.actor?.avatar_url ?? null,
@@ -449,19 +580,27 @@ async function fetchWorkflowContent(
 	octokit: Octokit,
 	owner: string,
 	repo: string,
-	path: string
+	path: string,
+	cacheUserId?: string
 ): Promise<string | null> {
 	// GitHub exposes generated workflows (for example Copilot code review) under
 	// dynamic/* paths. They are runnable but are not files in the repository.
 	if (!path.startsWith('.github/workflows/')) return null;
+	if (cacheUserId) {
+		const cached = await getCachedWorkflowFile(cacheUserId, owner, repo, path);
+		if (cached.hit) return cached.content;
+	}
 
 	try {
 		const { data } = await octokit.rest.repos.getContent({ owner, repo, path });
 		if (!('content' in data) || data.type !== 'file') return null;
 		// GitHub returns base64 with embedded newlines — strip them before decoding
 		const b64 = (data.content as string).replace(/\n/g, '');
-		return atob(b64);
+		const content = atob(b64);
+		if (cacheUserId) await setCachedWorkflowFile(cacheUserId, owner, repo, path, content);
+		return content;
 	} catch {
+		if (cacheUserId) await setCachedWorkflowFile(cacheUserId, owner, repo, path, null);
 		return null;
 	}
 }
@@ -548,7 +687,8 @@ async function fetchWorkflowRunnerInfo(
 	octokit: Octokit,
 	owner: string,
 	repo: string,
-	workflows: GitHubWorkflow[]
+	workflows: GitHubWorkflow[],
+	cacheUserId?: string
 ): Promise<Map<number, WorkflowRunnerInfo>> {
 	const results: Array<readonly [number, WorkflowRunnerInfo]> = [];
 	let nextIndex = 0;
@@ -557,7 +697,13 @@ async function fetchWorkflowRunnerInfo(
 		Array.from({ length: workerCount }, async () => {
 			while (nextIndex < workflows.length) {
 				const workflow = workflows[nextIndex++];
-				const content = await fetchWorkflowContent(octokit, owner, repo, workflow.path);
+				const content = await fetchWorkflowContent(
+					octokit,
+					owner,
+					repo,
+					workflow.path,
+					cacheUserId
+				);
 				const info = content
 					? parseWorkflowRunners(content)
 					: { multiplier: 1, runnerType: 'unknown' as RunnerType, detected: false };
@@ -569,10 +715,9 @@ async function fetchWorkflowRunnerInfo(
 }
 
 /** Returns the raw duration of a run in whole minutes (ceiling), minimum 0. */
-function runDurationMinutes(run: GitHubWorkflowRun): number {
-	const start = run.run_started_at ?? run.created_at;
-	const durationMs = new Date(run.updated_at).getTime() - new Date(start).getTime();
-	return Math.max(0, Math.ceil(durationMs / 60_000));
+function runDurationMinutes(run: GitHubWorkflowRun): number | null {
+	const durationMs = getRunTiming(run).durationMs;
+	return durationMs === null ? null : Math.max(0, Math.ceil(durationMs / 60_000));
 }
 
 interface MinutesOverviewMetrics {
@@ -612,6 +757,7 @@ function computeMinutesOverview(
 
 	for (const run of completedRuns) {
 		const minutes = runDurationMinutes(run);
+		if (minutes === null) continue;
 		totalMinutes30d += minutes;
 
 		// Per-workflow
@@ -624,7 +770,7 @@ function computeMinutesOverview(
 		}
 
 		// Daily trend (keyed by run start date)
-		const dateKey = (run.run_started_at ?? run.updated_at).slice(0, 10);
+		const dateKey = (getRunTiming(run).startedAt ?? run.created_at).slice(0, 10);
 		if (trendMap.has(dateKey)) {
 			trendMap.set(dateKey, (trendMap.get(dateKey) ?? 0) + minutes);
 		}
@@ -710,11 +856,12 @@ function computeMinutesDetail(
 
 	for (const run of completedRuns) {
 		const minutes = runDurationMinutes(run);
+		if (minutes === null) continue;
 		totalMinutes30d += minutes;
 		if (run.conclusion === 'failure' || run.conclusion === 'cancelled') {
 			wastedMinutes += minutes;
 		}
-		const dateKey = (run.run_started_at ?? run.updated_at).slice(0, 10);
+		const dateKey = (getRunTiming(run).startedAt ?? run.created_at).slice(0, 10);
 		if (trendMap.has(dateKey)) {
 			trendMap.set(dateKey, (trendMap.get(dateKey) ?? 0) + minutes);
 		}
@@ -805,8 +952,14 @@ export interface BuildDashboardDataOptions {
 	days?: number | null;
 	/** Called after each paginated page when fetching from GitHub. Useful for streaming progress. */
 	onProgress?: ProgressCallback;
+	/** Called as corrupted listing timestamps are repaired from workflow attempts. */
+	onRepairProgress?: (completed: number, total: number) => void;
+	/** Called immediately before derived dashboard metrics are computed. */
+	onComputeStart?: () => void;
 	/** Workflow IDs to include in DORA metrics calculation. When provided, only these workflows are used. */
 	doraWorkflowIds?: number[];
+	/** Authenticated cache namespace for workflow-file contents. */
+	cacheUserId?: string;
 }
 
 export async function buildDashboardData(
@@ -815,7 +968,16 @@ export async function buildDashboardData(
 	repo: string,
 	options?: BuildDashboardDataOptions
 ): Promise<DashboardData> {
-	const { onTiming, cachedRuns, onRunsFetched, onProgress, doraWorkflowIds } = options ?? {};
+	const {
+		onTiming,
+		cachedRuns,
+		onRunsFetched,
+		onProgress,
+		onRepairProgress,
+		onComputeStart,
+		doraWorkflowIds,
+		cacheUserId
+	} = options ?? {};
 	const days = options?.days === undefined ? 30 : options.days;
 	const isAllTime = days === null;
 	const now = typeof performance !== 'undefined' ? () => performance.now() : () => 0;
@@ -865,8 +1027,10 @@ export async function buildDashboardData(
 			})()
 		]);
 		timing('GitHub: Promise.all(workflows, runs, commits)', now() - parallelStart);
-		await onRunsFetched?.(runs);
 	}
+
+	await repairWorkflowRunTimings(octokit, owner, repo, runs, onRepairProgress);
+	if (cachedRuns == null) await onRunsFetched?.(runs);
 
 	const knownWorkflowIds = new Set(workflows.map((workflow) => workflow.id));
 	for (const run of runs) {
@@ -895,6 +1059,7 @@ export async function buildDashboardData(
 			)
 		: days;
 
+	onComputeStart?.();
 	const computeStart = now();
 	const workflowMetrics = workflows.map((w) => computeWorkflowMetrics(w, runs));
 	timing('compute: workflowMetrics', now() - computeStart, { workflows: workflows.length });
@@ -903,16 +1068,12 @@ export async function buildDashboardData(
 	const runTrend = buildRunTrend(runs, effectiveDays);
 	timing('compute: buildRunTrend', now() - trendStart, { runs: runs.length });
 
-	const recentStart = now();
-	const recentRuns = runsToRecentRuns(runs, workflows);
-	timing('compute: runsToRecentRuns', now() - recentStart);
-
 	const doraStart = now();
 	const dora = computeDoraMetrics(runs, doraWorkflowIds);
 	timing('compute: computeDoraMetrics', now() - doraStart, { runs: runs.length });
 
 	const runnerInfoStart = now();
-	const runnerInfoMap = await fetchWorkflowRunnerInfo(octokit, owner, repo, workflows);
+	const runnerInfoMap = await fetchWorkflowRunnerInfo(octokit, owner, repo, workflows, cacheUserId);
 	timing('GitHub: fetchWorkflowRunnerInfo', now() - runnerInfoStart, {
 		workflows: runnerInfoMap.size
 	});
@@ -933,7 +1094,7 @@ export async function buildDashboardData(
 		completedRuns.length > 0 ? Math.round((totalSkipped / completedRuns.length) * 1000) / 10 : 0;
 
 	const durations = completedRuns
-		.map((r) => computeDurationMs(r.run_started_at, r.updated_at))
+		.map((r) => getRunTiming(r).durationMs)
 		.filter((d): d is number => d !== null);
 	const avgDurationMs =
 		durations.length > 0 ? durations.reduce((a, b) => a + b, 0) / durations.length : 0;
@@ -951,7 +1112,7 @@ export async function buildDashboardData(
 		activeWorkflows: workflows.filter((w) => w.state === 'active').length,
 		runTrend,
 		workflowMetrics,
-		recentRuns,
+		timingDataQuality: summarizeTimingQuality(runs),
 		workflowFileCommits,
 		dora,
 		timeWindowDays: effectiveDays,
@@ -969,6 +1130,10 @@ export interface BuildWorkflowDetailDataOptions {
 	cachedRuns?: GitHubWorkflowRun[];
 	/** Called with the fetched runs when we hit GitHub (so the caller can cache them). */
 	onRunsFetched?: (runs: GitHubWorkflowRun[]) => void | Promise<void>;
+	/** Called as corrupted listing timestamps are repaired from workflow attempts. */
+	onRepairProgress?: (completed: number, total: number) => void;
+	/** Authenticated cache namespace for workflow-file contents. */
+	cacheUserId?: string;
 }
 
 export async function buildWorkflowDetailData(
@@ -978,7 +1143,7 @@ export async function buildWorkflowDetailData(
 	workflowId: number,
 	options?: BuildWorkflowDetailDataOptions
 ): Promise<WorkflowDetailData> {
-	const { cachedRuns, onRunsFetched, days } = options ?? {};
+	const { cachedRuns, onRunsFetched, onRepairProgress, cacheUserId, days } = options ?? {};
 	const created = days
 		? `>=${new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}`
 		: undefined;
@@ -993,8 +1158,10 @@ export async function buildWorkflowDetailData(
 			fetchWorkflows(octokit, owner, repo),
 			fetchAllSingleWorkflowRuns(octokit, owner, repo, workflowId, created)
 		]);
-		await onRunsFetched?.(runs);
 	}
+
+	await repairWorkflowRunTimings(octokit, owner, repo, runs, onRepairProgress);
+	if (cachedRuns == null) await onRunsFetched?.(runs);
 
 	const workflow = workflows.find((w) => w.id === workflowId);
 	if (!workflow) throw new Error(`Workflow ${workflowId} not found`);
@@ -1015,15 +1182,21 @@ export async function buildWorkflowDetailData(
 	const completedRuns = runs.filter((r) => r.status === 'completed');
 
 	const durationTrend: DurationDataPoint[] = completedRuns
-		.filter((r) => r.run_started_at)
-		.map((r) => ({
-			runId: r.id,
-			runNumber: r.run_number,
-			startedAt: r.run_started_at!,
-			durationMs: computeDurationMs(r.run_started_at, r.updated_at) ?? 0,
-			conclusion: r.conclusion,
-			branch: r.head_branch
-		}))
+		.flatMap((r) => {
+			const timing = getRunTiming(r);
+			return timing.startedAt && timing.durationMs !== null
+				? [
+						{
+							runId: r.id,
+							runNumber: r.run_number,
+							startedAt: timing.startedAt,
+							durationMs: timing.durationMs,
+							conclusion: r.conclusion,
+							branch: r.head_branch
+						}
+					]
+				: [];
+		})
 		.reverse();
 
 	// Fetch jobs for the last 5 runs to get job breakdown
@@ -1060,7 +1233,13 @@ export async function buildWorkflowDetailData(
 	let jobGraphNodes: WorkflowJobNode[] = [];
 	let jobGraphEdges: WorkflowJobEdge[] = [];
 
-	const workflowContent = await fetchWorkflowContent(octokit, owner, repo, workflow.path);
+	const workflowContent = await fetchWorkflowContent(
+		octokit,
+		owner,
+		repo,
+		workflow.path,
+		cacheUserId
+	);
 	// Only the most recent completed run counts as "latest failed" — completedRuns is newest-first,
 	// so this must NOT be a .find() scan (that would surface an older failure even after a later success).
 	const latestFailedRun = completedRuns[0]?.conclusion === 'failure' ? completedRuns[0] : null;
@@ -1206,6 +1385,7 @@ export async function buildWorkflowDetailData(
 		runHistory: buildRunTrend(runs, effectiveDays),
 		jobBreakdown,
 		recentRuns: runsToRecentRuns(runs, workflows),
+		timingDataQuality: summarizeTimingQuality(runs),
 		...minutesMetrics,
 		jobGraphNodes,
 		jobGraphEdges,
@@ -1214,7 +1394,7 @@ export async function buildWorkflowDetailData(
 			? {
 					runId: latestFailedRun.id,
 					runNumber: latestFailedRun.run_number,
-					failedAt: latestFailedRun.updated_at,
+					failedAt: getRunTiming(latestFailedRun).completedAt,
 					htmlUrl: latestFailedRun.html_url,
 					jobName: failedJob?.name ?? null,
 					stepName: failedStep?.name ?? null

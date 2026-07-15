@@ -31,6 +31,10 @@ export interface GitHubWorkflowRun {
 	created_at: string;
 	updated_at: string;
 	run_started_at: string | null;
+	/** Stable completion timestamp used by metrics. Null means timing is unavailable. */
+	effective_completed_at?: string | null;
+	/** Whether the completion timestamp came from the listing, an attempt repair, or was excluded. */
+	timing_quality?: 'original' | 'repaired' | 'excluded';
 	html_url: string;
 	actor: {
 		login: string;

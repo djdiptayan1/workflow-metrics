@@ -1,320 +1,264 @@
 import { error, json } from '@sveltejs/kit';
-import { createOctokit, buildDashboardData, isGitHubUnauthorizedError } from '$lib/server/github';
-import { createSupabaseAdminClient } from '$lib/server/supabase';
-import { getCachedWorkflowRuns, setCachedWorkflowRuns } from '$lib/server/workflow-runs-cache';
+import {
+	buildDashboardData,
+	createOctokit,
+	fetchIncrementalWorkflowRunsForRepo,
+	isGitHubUnauthorizedError
+} from '$lib/server/github';
+import {
+	acquireSyncLock,
+	getDashboardSnapshot,
+	getWorkflowRuns,
+	markReconciled,
+	reconciliationDue,
+	releaseSyncLock,
+	setDashboardSnapshot,
+	storeWorkflowRuns,
+	type ActionsLookback
+} from '$lib/server/workflow-runs-cache';
+import type { GitHubWorkflowRun } from '$lib/types/github';
+import type { DashboardData } from '$lib/types/metrics';
 import type { RequestHandler } from './$types';
 
-/**
- * GET /api/dashboard/data?owner=...&repo=...&days=all
- *
- * Returns dashboard data for the given repo. Supports:
- *
- * - ?days=all imports all available GitHub Actions history.
- * - ?days=30 imports a bounded window, capped at 90 days.
- *
- * - Cache-hit (fresh):   returns JSON immediately.
- * - Cache-hit (stale):   returns stale JSON immediately with `X-Data-Stale: true` header,
- *   then refreshes the cache in the background (stale-while-revalidate).
- * - Cache-miss:          if client sends `Accept: text/event-stream`, streams progress
- *   events via SSE so the UI can show a live progress bar; otherwise returns JSON
- *   once all data has been fetched.
- */
-export const GET: RequestHandler = async ({ url, locals, request, platform }) => {
+type SyncMode = 'none' | 'cached-runs' | 'cold' | 'incremental' | 'reconcile' | 'locked';
+
+interface DashboardContext {
+	userId: string;
+	owner: string;
+	repo: string;
+	lookback: ActionsLookback;
+	days: number | null;
+	doraWorkflowIds: number[];
+	octokit: ReturnType<typeof createOctokit>;
+}
+
+interface SyncCallbacks {
+	onFetchProgress?: (fetched: number, total: number, page: number) => void;
+	onRepairProgress?: (completed: number, total: number) => void;
+	onComputeStart?: () => void;
+}
+
+function parseLookback(value: string | null): ActionsLookback {
+	if (value === '7' || value === '30' || value === '90' || value === 'all') return value;
+	throw error(400, 'days must be one of 7, 30, 90, or all');
+}
+
+function createdFilter(days: number | null): string | undefined {
+	if (days === null) return undefined;
+	return `>=${new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10)}`;
+}
+
+async function syncDashboard(
+	context: DashboardContext,
+	callbacks: SyncCallbacks = {},
+	forceCachedRuns = false
+): Promise<{ data: DashboardData; sync: SyncMode }> {
+	const { userId, owner, repo, lookback, days, doraWorkflowIds, octokit } = context;
+	const cachedRuns = await getWorkflowRuns(userId, owner, repo, lookback);
+	const due = cachedRuns.length > 0 && (await reconciliationDue(userId, owner, repo, lookback));
+	let runs: GitHubWorkflowRun[] | undefined;
+	let sync: SyncMode;
+
+	if (cachedRuns.length > 0 && forceCachedRuns) {
+		runs = cachedRuns;
+		sync = 'cached-runs';
+	} else if (cachedRuns.length > 0 && !due) {
+		runs = await fetchIncrementalWorkflowRunsForRepo(
+			octokit,
+			owner,
+			repo,
+			cachedRuns,
+			createdFilter(days),
+			callbacks.onFetchProgress
+		);
+		sync = 'incremental';
+	} else {
+		sync = cachedRuns.length > 0 ? 'reconcile' : 'cold';
+	}
+
+	let fetchedRuns: GitHubWorkflowRun[] = runs ?? [];
+	const data = await buildDashboardData(octokit, owner, repo, {
+		days,
+		cachedRuns: runs,
+		doraWorkflowIds,
+		cacheUserId: userId,
+		onProgress: callbacks.onFetchProgress,
+		onRepairProgress: callbacks.onRepairProgress,
+		onComputeStart: callbacks.onComputeStart,
+		onRunsFetched: (nextRuns) => {
+			fetchedRuns = nextRuns;
+		}
+	});
+
+	await storeWorkflowRuns(userId, owner, repo, lookback, fetchedRuns);
+	await setDashboardSnapshot(userId, owner, repo, lookback, data, doraWorkflowIds);
+	if (sync === 'cold' || sync === 'reconcile') await markReconciled(userId, owner, repo, lookback);
+	return { data, sync };
+}
+
+export const GET: RequestHandler = async ({ url, locals, request }) => {
 	const { user } = await locals.safeGetSession();
 	if (!user) throw error(401, 'Unauthorized');
 
 	const owner = url.searchParams.get('owner');
 	const repo = url.searchParams.get('repo');
 	if (!owner || !repo) throw error(400, 'Missing owner or repo');
+	const lookback = parseLookback(url.searchParams.get('days'));
+	const days = lookback === 'all' ? null : Number(lookback);
 
-	const daysParam = url.searchParams.get('days');
-	const days =
-		daysParam === 'all'
-			? null
-			: daysParam
-				? Math.min(Math.max(parseInt(daysParam, 10) || 30, 1), 90)
-				: 30;
-
-	const { data: connection } = await locals.supabase
-		.from('github_connections')
-		.select('access_token')
-		.eq('user_id', user.id)
-		.single();
-
-	if (!connection) throw error(401, 'GitHub connection not found');
-
-	// Fetch the repository to get its ID
-	const { data: repository } = await locals.supabase
-		.from('repositories')
-		.select('id')
-		.eq('user_id', user.id)
-		.eq('owner', owner)
-		.eq('name', repo)
-		.single();
-
-	// Fetch DORA workflow selections for this repository
-	// undefined = feature not initialized (always empty, show prompt)
-	// [] = user cleared all selections (show prompt)
-	// [1,2,3] = user selected workflows (filter metrics)
-	let doraWorkflowIds: number[] | undefined = undefined;
-	if (repository) {
-		const { data: doraWorkflows } = await locals.supabase
-			.from('dora_workflows')
-			.select('workflow_id')
+	const [{ data: connection }, { data: repository }, { data: settings }] = await Promise.all([
+		locals.supabase
+			.from('github_connections')
+			.select('access_token')
 			.eq('user_id', user.id)
-			.eq('repository_id', repository.id);
+			.single(),
+		locals.supabase
+			.from('repositories')
+			.select('id')
+			.eq('user_id', user.id)
+			.eq('owner', owner)
+			.eq('name', repo)
+			.single(),
+		locals.supabase
+			.from('user_settings')
+			.select('dashboard_refresh_interval')
+			.eq('user_id', user.id)
+			.single()
+	]);
+	if (!connection) throw error(401, 'GitHub connection not found');
+	if (!repository) throw error(403, 'Repository not found or access denied');
 
-		// If query succeeded (even if empty), set to empty array to show this is initialized
-		if (doraWorkflows !== null) {
-			doraWorkflowIds = doraWorkflows.length > 0 ? doraWorkflows.map((w) => w.workflow_id) : [];
-		}
-	}
-	const { data: userSettings } = await locals.supabase
-		.from('user_settings')
-		.select('dashboard_refresh_interval')
+	const { data: doraWorkflows } = await locals.supabase
+		.from('dora_workflows')
+		.select('workflow_id')
 		.eq('user_id', user.id)
-		.single();
-	const refreshInterval = userSettings?.dashboard_refresh_interval ?? '5';
+		.eq('repository_id', repository.id);
+	const doraWorkflowIds = doraWorkflows?.map((workflow) => workflow.workflow_id) ?? [];
+	const refreshInterval = settings?.dashboard_refresh_interval ?? '5';
 	const freshnessMs = refreshInterval === 'realtime' ? 0 : Number(refreshInterval) * 60_000;
 
-	const windowStart = (() => {
-		if (days === null) return '1970-01-01';
-		const d = new Date();
-		d.setDate(d.getDate() - days);
-		return d.toISOString().slice(0, 10);
-	})();
-
-	const cachedResult =
-		refreshInterval === 'realtime'
-			? null
-			: await getCachedWorkflowRuns(
-					locals.supabase,
-					user.id,
-					owner,
-					repo,
-					windowStart,
-					freshnessMs
-				);
-
-	const octokit = createOctokit(connection.access_token);
-	const snapshotMatchesDoraSelection =
-		cachedResult?.dashboardData != null &&
-		[...(cachedResult.dashboardData.doraWorkflowIds ?? [])].sort().join(',') ===
-			[...(doraWorkflowIds ?? [])].sort().join(',');
-	const requestStart = performance.now();
-	const timing: string[] = [];
-	const onTiming = (label: string, ms: number) => {
-		timing.push(`${label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()};dur=${Math.round(ms)}`);
-	};
-	const timedJson = (data: unknown, cacheState: 'fresh' | 'stale' | 'miss') =>
-		json(data, {
-			headers: {
-				'X-Data-Cache': cacheState,
-				...(cacheState === 'stale' ? { 'X-Data-Stale': 'true' } : {}),
-				'Server-Timing': [
-					`dashboard;dur=${Math.round(performance.now() - requestStart)}`,
-					...timing
-				].join(', ')
-			}
-		});
-
-	// --- Cache hit (fresh) ---
-	if (
-		cachedResult &&
-		!cachedResult.isStale &&
-		cachedResult.dashboardData &&
-		snapshotMatchesDoraSelection
-	) {
-		return timedJson(cachedResult.dashboardData, 'fresh');
-	}
-
-	// Legacy raw-run cache entries are upgraded in-place on their next read.
-	if (cachedResult && !cachedResult.isStale) {
-		try {
-			const dashboardData = await buildDashboardData(octokit, owner, repo, {
-				cachedRuns: cachedResult.runs,
-				days,
-				doraWorkflowIds,
-				onTiming
-			});
-			const admin = createSupabaseAdminClient();
-			await setCachedWorkflowRuns(
-				admin ?? locals.supabase,
-				user.id,
-				owner,
-				repo,
-				windowStart,
-				cachedResult.runs,
-				dashboardData
-			);
-			return timedJson(dashboardData, 'fresh');
-		} catch (e: unknown) {
-			return handleGitHubError(e);
-		}
-	}
-
-	// --- Cache hit (stale): return stale data immediately, refresh in background ---
-	if (
-		cachedResult &&
-		cachedResult.isStale &&
-		cachedResult.dashboardData &&
-		snapshotMatchesDoraSelection
-	) {
-		// Fire background refresh — update the cache without blocking the response
-		const refreshTask = (async () => {
-			try {
-				const admin = createSupabaseAdminClient();
-				const supabaseForWrite = admin ?? locals.supabase;
-				let refreshedRuns = cachedResult.runs;
-				const dashboardData = await buildDashboardData(octokit, owner, repo, {
-					days,
-					doraWorkflowIds,
-					onRunsFetched: async (runs) => {
-						refreshedRuns = runs;
-					}
-				});
-				await setCachedWorkflowRuns(
-					supabaseForWrite,
-					user.id,
-					owner,
-					repo,
-					windowStart,
-					refreshedRuns,
-					dashboardData
-				);
-			} catch (e) {
-				console.warn('[api/dashboard/data] Background SWR refresh failed:', e);
-			}
-		})();
-
-		// On Cloudflare Workers, use waitUntil so the worker stays alive for the background task
-		const ctx = platform?.env
-			? (platform as { context?: { waitUntil?: (p: Promise<unknown>) => void } }).context
-			: undefined;
-		if (ctx?.waitUntil) {
-			ctx.waitUntil(refreshTask);
-		}
-		// In Node.js the promise runs fire-and-forget
-
-		return timedJson(cachedResult.dashboardData, 'stale');
-	}
-
-	// --- Cache miss ---
-	// If client requests SSE, stream progress events for a better UX during long fetches
-	const acceptsSSE = request.headers.get('Accept') === 'text/event-stream';
-
-	if (acceptsSSE) {
-		return streamDashboardData(
-			octokit,
+	let snapshot;
+	try {
+		snapshot = await getDashboardSnapshot(
+			user.id,
 			owner,
 			repo,
-			days,
-			windowStart,
-			user.id,
-			locals,
+			lookback,
+			freshnessMs,
 			doraWorkflowIds
 		);
+	} catch (cause) {
+		console.error('[api/dashboard/data] Redis read failed', cause);
+		return unavailable();
 	}
 
-	// Plain JSON fallback (no SSE support, or client didn't request it)
-	try {
-		const admin = createSupabaseAdminClient();
-		const supabaseForWrite = admin ?? locals.supabase;
-
-		let fetchedRuns: import('$lib/types/github').GitHubWorkflowRun[] = [];
-		const dashboardData = await buildDashboardData(octokit, owner, repo, {
-			days,
-			doraWorkflowIds,
-			onTiming,
-			onRunsFetched: async (runs) => {
-				fetchedRuns = runs;
+	const context: DashboardContext = {
+		userId: user.id,
+		owner,
+		repo,
+		lookback,
+		days,
+		doraWorkflowIds,
+		octokit: createOctokit(connection.access_token)
+	};
+	const respond = (data: DashboardData, cache: 'fresh' | 'stale' | 'miss', sync: SyncMode) =>
+		json(data, {
+			headers: {
+				'X-Data-Cache': cache,
+				'X-Data-Sync': sync,
+				...(cache === 'stale' ? { 'X-Data-Stale': 'true' } : {})
 			}
 		});
-		await setCachedWorkflowRuns(
-			supabaseForWrite,
-			user.id,
-			owner,
-			repo,
-			windowStart,
-			fetchedRuns,
-			dashboardData
-		);
-		return timedJson(dashboardData, 'miss');
-	} catch (e: unknown) {
-		return handleGitHubError(e);
+
+	if (snapshot && !snapshot.isStale) return respond(snapshot.dashboardData, 'fresh', 'none');
+
+	if (snapshot?.isStale) {
+		const token = await acquireSyncLock(user.id, owner, repo, lookback).catch(() => null);
+		if (token) {
+			void syncDashboard(context)
+				.catch((cause) => console.warn('[api/dashboard/data] Background refresh failed', cause))
+				.finally(() => releaseSyncLock(user.id, owner, repo, lookback, token).catch(() => {}));
+		}
+		return respond(snapshot.dashboardData, 'stale', token ? 'incremental' : 'locked');
+	}
+
+	const token = await acquireSyncLock(user.id, owner, repo, lookback).catch(() => null);
+	if (!token) return unavailable();
+
+	const cachedRuns = await getWorkflowRuns(user.id, owner, repo, lookback).catch(() => []);
+	const forceCachedRuns = cachedRuns.length > 0;
+	if (request.headers.get('Accept') === 'text/event-stream') {
+		return streamDashboard(context, token, forceCachedRuns);
+	}
+
+	try {
+		const result = await syncDashboard(context, {}, forceCachedRuns);
+		return respond(result.data, 'miss', result.sync);
+	} catch (cause) {
+		return handleGitHubError(cause);
+	} finally {
+		await releaseSyncLock(user.id, owner, repo, lookback, token).catch(() => {});
 	}
 };
 
-// ---------------------------------------------------------------------------
-// SSE streaming helper
-// ---------------------------------------------------------------------------
-
 type SseEvent =
 	| { event: 'progress'; data: { phase: 'fetching'; fetched: number; total: number; page: number } }
+	| { event: 'progress'; data: { phase: 'repairing'; completed: number; total: number } }
 	| { event: 'progress'; data: { phase: 'computing' } }
-	| { event: 'complete'; data: unknown }
+	| { event: 'complete'; data: DashboardData }
 	| { event: 'error'; data: { message: string } };
 
-function encodeSse(ev: SseEvent): string {
-	return `event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`;
-}
-
-function streamDashboardData(
-	octokit: ReturnType<typeof createOctokit>,
-	owner: string,
-	repo: string,
-	days: number | null,
-	windowStart: string,
-	userId: string,
-	locals: App.Locals,
-	doraWorkflowIds?: number[]
+function streamDashboard(
+	context: DashboardContext,
+	token: string,
+	forceCachedRuns: boolean
 ): Response {
 	const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
 	const writer = writable.getWriter();
 	const encoder = new TextEncoder();
-
-	const write = (ev: SseEvent) => {
-		writer.write(encoder.encode(encodeSse(ev))).catch(() => {});
+	const write = (value: SseEvent) =>
+		writer.write(encoder.encode(`event: ${value.event}\ndata: ${JSON.stringify(value.data)}\n\n`));
+	const writeProgress = (value: Extract<SseEvent, { event: 'progress' }>) => {
+		void write(value).catch(() => {
+			// The client may navigate away while a cold import continues under the Redis lock.
+		});
 	};
 
-	(async () => {
+	void (async () => {
 		try {
-			const admin = createSupabaseAdminClient();
-			const supabaseForWrite = admin ?? locals.supabase;
-			let fetchedRuns: import('$lib/types/github').GitHubWorkflowRun[] = [];
-
-			const dashboardData = await buildDashboardData(octokit, owner, repo, {
-				days,
-				doraWorkflowIds,
-				onProgress: (fetched, total, page) => {
-					write({
-						event: 'progress',
-						data: { phase: 'fetching', fetched, total, page }
-					});
+			const result = await syncDashboard(
+				context,
+				{
+					onFetchProgress: (fetched, total, page) => {
+						writeProgress({
+							event: 'progress',
+							data: { phase: 'fetching', fetched, total, page }
+						});
+					},
+					onRepairProgress: (completed, total) => {
+						writeProgress({ event: 'progress', data: { phase: 'repairing', completed, total } });
+					},
+					onComputeStart: () => {
+						writeProgress({ event: 'progress', data: { phase: 'computing' } });
+					}
 				},
-				onRunsFetched: async (runs) => {
-					write({ event: 'progress', data: { phase: 'computing' } });
-					fetchedRuns = runs;
-				}
-			});
-			await setCachedWorkflowRuns(
-				supabaseForWrite,
-				userId,
-				owner,
-				repo,
-				windowStart,
-				fetchedRuns,
-				dashboardData
+				forceCachedRuns
 			);
-
-			write({ event: 'complete', data: dashboardData });
-		} catch (e: unknown) {
-			const message = isGitHubUnauthorizedError(e)
+			await write({ event: 'complete', data: result.data });
+		} catch (cause) {
+			const message = isGitHubUnauthorizedError(cause)
 				? 'GitHub token expired. Please sign in again.'
-				: 'Failed to fetch GitHub Actions data. Please check your permissions.';
-			write({ event: 'error', data: { message } });
+				: 'Failed to fetch GitHub Actions data. Please retry.';
+			await write({ event: 'error', data: { message } }).catch(() => {});
 		} finally {
-			writer.close().catch(() => {});
+			await releaseSyncLock(
+				context.userId,
+				context.owner,
+				context.repo,
+				context.lookback,
+				token
+			).catch(() => {});
+			await writer.close().catch(() => {});
 		}
 	})();
 
@@ -322,20 +266,23 @@ function streamDashboardData(
 		headers: {
 			'Content-Type': 'text/event-stream',
 			'Cache-Control': 'no-cache',
-			Connection: 'keep-alive'
+			Connection: 'keep-alive',
+			'X-Data-Cache': 'miss',
+			'X-Data-Sync': forceCachedRuns ? 'cached-runs' : 'cold'
 		}
 	});
 }
 
-// ---------------------------------------------------------------------------
-// Error helper
-// ---------------------------------------------------------------------------
+function unavailable(): Response {
+	return json(
+		{ message: 'Workflow data cache is temporarily unavailable. Please retry.', retryable: true },
+		{ status: 503, headers: { 'Retry-After': '3' } }
+	);
+}
 
-function handleGitHubError(e: unknown): never {
-	if (isGitHubUnauthorizedError(e)) {
+function handleGitHubError(cause: unknown): never {
+	if (isGitHubUnauthorizedError(cause))
 		throw error(401, 'GitHub token expired. Please sign in again.');
-	}
-	const err = e as Record<string, unknown>;
-	console.error('[api/dashboard/data] Failed to fetch dashboard data:', err);
+	console.error('[api/dashboard/data] Sync failed', cause);
 	throw error(500, 'Failed to fetch GitHub Actions data. Please check your permissions.');
 }
