@@ -1,12 +1,41 @@
+# Version control and local tooling
 .git
-.svelte-kit
-build
-coverage
-node_modules
-.env*
-.DS_Store
-*.log
-PRODUCT_PLAN.md
+.github
 .claude
+.clusterfuzzlite
 .codex
 .cursor
+.firecrawl
+.impeccable
+.playwright-cli
+.wrangler
+.mcp.json
+
+# Dependencies, caches, and generated output
+node_modules
+.pnpm-store
+.svelte-kit
+build
+coverage*
+output
+.cache
+*.log
+
+# Local configuration and secrets
+.env*
+src/lib/server/config/app-config.local.ts
+
+# Development-only files
+supabase
+scripts
+**/*.test.*
+**/*.spec.*
+*.md
+.DS_Store
+.gitignore
+.prettierrc
+.releaserc.cjs
+eslint.config.js
+osv-scanner.toml
+vitest.config.ts
+docker-compose*.yml

@@ -294,9 +294,15 @@ The supported production runtime is the Node image plus Redis. By default, Compo
 to pull `djdiptayan/workflow-metrics:latest`; if it is unavailable, Compose builds the Dockerfile:
 
 ```bash
+cp .env.example .env
+# Edit .env with your Supabase, app URL, and GitHub App values.
 docker compose up -d
 docker compose ps
 ```
+
+Compose passes `.env` to the app container through `env_file`; no `-e` flags are required.
+Its bundled Redis service supplies the container's `REDIS_URL`. For production, set both
+`PUBLIC_APP_URL` and `ORIGIN` to the public HTTPS application URL.
 
 For a local source build that must not overwrite the public image tag:
 
