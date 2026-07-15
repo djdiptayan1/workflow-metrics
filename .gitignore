@@ -11,6 +11,7 @@ PRODUCT.md
 
 # Local MCP configuration
 .mcp.json
+/.claude
 /.cursor
 /.pnpm-store
 /.firecrawl

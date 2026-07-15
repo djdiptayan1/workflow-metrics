@@ -6,6 +6,9 @@ services:
     env_file: .env
     environment:
       CI: "true"
+      PUBLIC_SUPABASE_URL: "http://host.docker.internal:54321"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: sh -c "pnpm install --frozen-lockfile && pnpm dev --host 0.0.0.0"
     volumes:
       - .:/app

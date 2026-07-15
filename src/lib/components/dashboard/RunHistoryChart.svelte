@@ -16,6 +16,8 @@
 	// Hover state: index into data for tooltip
 	let hoveredIndex = $state<number | null>(null);
 	let chartRef = $state<HTMLDivElement | null>(null);
+	let tooltipRef = $state<HTMLDivElement | null>(null);
+	let tooltipLeftPx = $state(0);
 
 	// Simple SVG chart - no external chart library needed for MVP
 	const width = 600;
@@ -133,11 +135,18 @@
 		});
 	}
 
-	function tooltipTransform(index: number) {
-		if (index <= 1) return 'translate(0, calc(-100% - 8px))';
-		if (index >= data.length - 2) return 'translate(-100%, calc(-100% - 8px))';
-		return 'translate(-50%, calc(-100% - 8px))';
-	}
+	// Clamp the tooltip against the chart's actual rendered bounds instead of guessing from
+	// data index — a long commit message can make the box far wider than usual.
+	$effect(() => {
+		if (hoveredIndex == null || !chartRef || !tooltipRef) return;
+		const containerWidth = chartRef.getBoundingClientRect().width;
+		const tooltipWidth = tooltipRef.getBoundingClientRect().width;
+		const targetX = (hoveredX / width) * containerWidth;
+		tooltipLeftPx = Math.min(
+			Math.max(targetX - tooltipWidth / 2, 4),
+			containerWidth - tooltipWidth - 4
+		);
+	});
 </script>
 
 <div class="bg-card border-border space-y-4 rounded-xl border p-5">
@@ -263,10 +272,11 @@
 			<!-- Tooltip (horizontal position matches SVG viewBox so it stays aligned) -->
 			{#if hoveredPoint && chartRef}
 				<div
+					bind:this={tooltipRef}
 					class="border-border bg-card pointer-events-none absolute top-0 left-0 z-10 rounded-lg border px-3 py-2 text-xs shadow-lg"
 					style="
-						left: {(hoveredX / width) * 100}%;
-						transform: {tooltipTransform(hoveredIndex ?? 0)};
+						left: {tooltipLeftPx}px;
+						transform: translateY(calc(-100% - 8px));
 					"
 				>
 					<div class="text-foreground font-medium">{formatDate(hoveredPoint.date)}</div>

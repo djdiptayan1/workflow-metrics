@@ -75,6 +75,12 @@ Figma template: [Dark Admin Dashboards](https://www.figma.com/community/file/132
 
 ## Getting Started
 
+Want to run everything locally (local Supabase, not a hosted project) with full step-by-step
+instructions, including GitHub OAuth App + GitHub App setup and Docker networking notes? See
+[LOCAL_SETUP.md](LOCAL_SETUP.md).
+
+The instructions below assume a hosted Supabase project instead.
+
 ### Run locally with Docker
 
 1. Copy `.env.example` to `.env` and add the three Supabase values from your project:
