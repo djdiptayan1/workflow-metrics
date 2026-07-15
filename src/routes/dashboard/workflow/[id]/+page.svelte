@@ -189,7 +189,8 @@
 			class="min-w-[140px] flex-1"
 			title="Avg Duration"
 			value={formatDuration(metrics.avgDurationMs)}
-			subtitle="P95: {formatDuration(metrics.p95DurationMs)}"
+			subtitle="P50: {formatDuration(metrics.p50DurationMs)} · P95: {formatDuration(metrics.p95DurationMs)}"
+			help="P50 is the median: half of runs finish faster. P95 means 95% of runs finish faster, highlighting the slower tail."
 		/>
 		<MetricCard
 			class="min-w-[140px] flex-1"
