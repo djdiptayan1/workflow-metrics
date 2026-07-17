@@ -64,8 +64,12 @@ export async function fetchWorkflows(
 	owner: string,
 	repo: string
 ): Promise<GitHubWorkflow[]> {
-	const { data } = await octokit.rest.actions.listRepoWorkflows({ owner, repo, per_page: 100 });
-	return (data.workflows as GitHubWorkflow[]).filter((workflow) => !isReusableWorkflow(workflow));
+	const workflows = await octokit.paginate(octokit.rest.actions.listRepoWorkflows, {
+		owner,
+		repo,
+		per_page: 100
+	});
+	return (workflows as GitHubWorkflow[]).filter((workflow) => !isReusableWorkflow(workflow));
 }
 
 function isReusableWorkflow(workflow: GitHubWorkflow): boolean {
@@ -84,6 +88,7 @@ export async function fetchWorkflowRuns(
 		repo,
 		per_page: options.per_page ?? 100,
 		page: options.page ?? 1,
+		exclude_pull_requests: true,
 		...(options.created ? { created: options.created } : {})
 	});
 	return (data.workflow_runs as unknown as GitHubWorkflowRun[]).map(normalizeWorkflowRun);
@@ -104,7 +109,270 @@ function isBeforeCutoff(run: GitHubWorkflowRun, cutoff: number | null): boolean 
 	return Number.isFinite(createdAt) && createdAt < cutoff;
 }
 
-/** Fetches all workflow runs for the repo in the given date range by paginating through the API. */
+const WORKFLOW_RUN_PAGE_SIZE = 100;
+const WORKFLOW_RUN_CONCURRENCY = 3;
+const MAX_RATE_LIMIT_RETRIES = 2;
+const MAX_CONCURRENT_IMPORT_ATTEMPTS = 2;
+
+interface WorkflowRunRequestState {
+	serial: boolean;
+	serialTail: Promise<void>;
+	retries: number;
+	rateLimitRemaining: number | null;
+}
+
+class UnstableWorkflowRunListingError extends Error {
+	constructor(
+		message: string,
+		readonly pages = 0,
+		readonly sourceTotal = 0
+	) {
+		super(message);
+	}
+}
+
+function responseHeader(headers: unknown, name: string): string | null {
+	if (!headers || typeof headers !== 'object') return null;
+	const value = (headers as Record<string, unknown>)[name];
+	return typeof value === 'string' || typeof value === 'number' ? String(value) : null;
+}
+
+function errorStatus(cause: unknown): number | null {
+	if (!cause || typeof cause !== 'object') return null;
+	const error = cause as Record<string, unknown>;
+	if (typeof error.status === 'number') return error.status;
+	const response = error.response as Record<string, unknown> | undefined;
+	return typeof response?.status === 'number' ? response.status : null;
+}
+
+function errorHeaders(cause: unknown): unknown {
+	if (!cause || typeof cause !== 'object') return null;
+	return ((cause as Record<string, unknown>).response as Record<string, unknown> | undefined)
+		?.headers;
+}
+
+function rateLimitDelayMs(cause: unknown, attempt: number): number {
+	const headers = errorHeaders(cause);
+	const retryAfterHeader = responseHeader(headers, 'retry-after');
+	const retryAfter = retryAfterHeader === null ? NaN : Number(retryAfterHeader);
+	if (Number.isFinite(retryAfter) && retryAfter >= 0) return retryAfter * 1_000;
+	const resetHeader = responseHeader(headers, 'x-ratelimit-reset');
+	const reset = resetHeader === null ? NaN : Number(resetHeader);
+	if (Number.isFinite(reset) && reset > 0)
+		return Math.min(Math.max(reset * 1_000 - Date.now(), 1_000), 3_600_000);
+	return Math.min(60_000 * 2 ** attempt, 300_000);
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function mapLimit<T, R>(
+	items: T[],
+	limit: number,
+	mapper: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+	const results = new Array<R>(items.length);
+	let next = 0;
+	await Promise.all(
+		Array.from({ length: Math.min(limit, items.length) }, async () => {
+			while (next < items.length) {
+				const index = next++;
+				results[index] = await mapper(items[index], index);
+			}
+		})
+	);
+	return results;
+}
+
+async function requestWorkflowRunsForRepo(
+	octokit: Octokit,
+	owner: string,
+	repo: string,
+	state: WorkflowRunRequestState,
+	options: { per_page: number; page: number }
+) {
+	const requestOnce = () =>
+		octokit.rest.actions.listWorkflowRunsForRepo({
+			owner,
+			repo,
+			...options,
+			exclude_pull_requests: true
+		});
+	const requestQueued = () => {
+		if (!state.serial) return requestOnce();
+		const queued = state.serialTail.then(requestOnce, requestOnce);
+		state.serialTail = queued.then(
+			() => undefined,
+			() => undefined
+		);
+		return queued;
+	};
+
+	for (let attempt = 0; ; attempt++) {
+		try {
+			const response = await requestQueued();
+			const remainingHeader = responseHeader(response.headers, 'x-ratelimit-remaining');
+			const remaining = remainingHeader === null ? NaN : Number(remainingHeader);
+			if (Number.isFinite(remaining)) state.rateLimitRemaining = remaining;
+			return response;
+		} catch (cause) {
+			const status = errorStatus(cause);
+			if ((status !== 403 && status !== 429) || attempt >= MAX_RATE_LIMIT_RETRIES) throw cause;
+			state.serial = true;
+			state.retries++;
+			await sleep(rateLimitDelayMs(cause, attempt));
+		}
+	}
+}
+
+function uniqueSortedRuns(runs: GitHubWorkflowRun[]): GitHubWorkflowRun[] {
+	return [...new Map(runs.map((run) => [run.id, run])).values()].sort(
+		(a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id
+	);
+}
+
+async function fetchWorkflowRunsConcurrently(
+	octokit: Octokit,
+	owner: string,
+	repo: string,
+	state: WorkflowRunRequestState,
+	created?: string,
+	onTiming?: TimingCollector,
+	onProgress?: ProgressCallback,
+	progressFloor = 0,
+	pageFloor = 0
+): Promise<{ runs: GitHubWorkflowRun[]; pages: number; sourceTotal: number }> {
+	const cutoff = createdCutoff(created);
+	const firstStartedAt = typeof performance !== 'undefined' ? performance.now() : 0;
+	const firstResponse = await requestWorkflowRunsForRepo(octokit, owner, repo, state, {
+		per_page: WORKFLOW_RUN_PAGE_SIZE,
+		page: 1
+	});
+	const firstRuns = (
+		(firstResponse.data.workflow_runs ?? []) as unknown as GitHubWorkflowRun[]
+	).map(normalizeWorkflowRun);
+	if (onTiming && typeof performance !== 'undefined')
+		onTiming(
+			'GitHub: listWorkflowRunsForRepo concurrent page',
+			performance.now() - firstStartedAt,
+			{
+				runsInPage: firstRuns.length
+			}
+		);
+
+	const sourceTotal = firstResponse.data.total_count ?? firstRuns.length;
+	const firstRunId = firstRuns[0]?.id ?? null;
+	const pages = [firstRuns];
+	let completedPages = 1;
+	let fetched = firstRuns.length;
+	let nextPage = 2;
+	let done =
+		firstRuns.length < WORKFLOW_RUN_PAGE_SIZE ||
+		firstRuns.some((run) => isBeforeCutoff(run, cutoff));
+	onProgress?.(Math.max(progressFloor, fetched), sourceTotal, pageFloor + completedPages);
+
+	while (!done) {
+		const lastPage = Math.ceil(sourceTotal / WORKFLOW_RUN_PAGE_SIZE);
+		const pageNumbers = Array.from(
+			{ length: Math.max(0, Math.min(WORKFLOW_RUN_CONCURRENCY, lastPage - nextPage + 1)) },
+			(_, index) => nextPage + index
+		);
+		if (pageNumbers.length === 0) break;
+		const batch = await mapLimit(pageNumbers, WORKFLOW_RUN_CONCURRENCY, async (page) => {
+			const startedAt = typeof performance !== 'undefined' ? performance.now() : 0;
+			const { data } = await requestWorkflowRunsForRepo(octokit, owner, repo, state, {
+				per_page: WORKFLOW_RUN_PAGE_SIZE,
+				page
+			});
+			const runs = ((data.workflow_runs ?? []) as unknown as GitHubWorkflowRun[]).map(
+				normalizeWorkflowRun
+			);
+			completedPages++;
+			fetched += runs.length;
+			onProgress?.(Math.max(progressFloor, fetched), sourceTotal, pageFloor + completedPages);
+			if (onTiming && typeof performance !== 'undefined')
+				onTiming('GitHub: listWorkflowRunsForRepo concurrent page', performance.now() - startedAt, {
+					runsInPage: runs.length
+				});
+			return runs;
+		});
+		pages.push(...batch);
+		done = batch.some(
+			(runs) =>
+				runs.length < WORKFLOW_RUN_PAGE_SIZE || runs.some((run) => isBeforeCutoff(run, cutoff))
+		);
+		nextPage += pageNumbers.length;
+	}
+
+	const finalResponse = await requestWorkflowRunsForRepo(octokit, owner, repo, state, {
+		per_page: 1,
+		page: 1
+	});
+	const finalTotal = finalResponse.data.total_count ?? finalResponse.data.workflow_runs.length;
+	const finalRunId =
+		(finalResponse.data.workflow_runs[0] as { id?: number } | undefined)?.id ?? null;
+	const runs = uniqueSortedRuns(pages.flat().filter((run) => !isBeforeCutoff(run, cutoff)));
+	if (
+		finalTotal !== sourceTotal ||
+		finalRunId !== firstRunId ||
+		(cutoff === null && runs.length !== finalTotal)
+	) {
+		throw new UnstableWorkflowRunListingError(
+			`unstable-listing:${sourceTotal}/${finalTotal}/${runs.length}`,
+			pages.length,
+			Math.max(sourceTotal, finalTotal)
+		);
+	}
+	return { runs, pages: pages.length, sourceTotal: finalTotal };
+}
+
+async function fetchWorkflowRunsSerially(
+	octokit: Octokit,
+	owner: string,
+	repo: string,
+	created: string | undefined,
+	state: WorkflowRunRequestState,
+	onTiming?: TimingCollector,
+	onProgress?: ProgressCallback,
+	progressFloor = 0,
+	pageFloor = 0
+): Promise<{ runs: GitHubWorkflowRun[]; pages: number; sourceTotal: number }> {
+	const runs: GitHubWorkflowRun[] = [];
+	const cutoff = createdCutoff(created);
+	let page = 1;
+	let total = 0;
+	while (true) {
+		const startedAt = typeof performance !== 'undefined' ? performance.now() : 0;
+		const { data } = await requestWorkflowRunsForRepo(octokit, owner, repo, state, {
+			per_page: WORKFLOW_RUN_PAGE_SIZE,
+			page
+		});
+		const pageRuns = ((data.workflow_runs ?? []) as unknown as GitHubWorkflowRun[]).map(
+			normalizeWorkflowRun
+		);
+		if (onTiming && typeof performance !== 'undefined')
+			onTiming(`GitHub: listWorkflowRunsForRepo page ${page}`, performance.now() - startedAt, {
+				runsInPage: pageRuns.length
+			});
+		if (page === 1) total = data.total_count ?? pageRuns.length;
+		runs.push(...pageRuns.filter((run) => !isBeforeCutoff(run, cutoff)));
+		onProgress?.(
+			Math.max(progressFloor, Math.min(page * WORKFLOW_RUN_PAGE_SIZE, total)),
+			total,
+			pageFloor + page
+		);
+		if (
+			pageRuns.length < WORKFLOW_RUN_PAGE_SIZE ||
+			pageRuns.some((run) => isBeforeCutoff(run, cutoff))
+		)
+			break;
+		page++;
+	}
+	return { runs: uniqueSortedRuns(runs), pages: page, sourceTotal: total };
+}
+
+/** Fetches unfiltered pages concurrently and falls back to serial pagination if the listing moves. */
 export async function fetchAllWorkflowRunsForRepo(
 	octokit: Octokit,
 	owner: string,
@@ -113,45 +381,88 @@ export async function fetchAllWorkflowRunsForRepo(
 	onTiming?: TimingCollector,
 	onProgress?: ProgressCallback
 ): Promise<GitHubWorkflowRun[]> {
-	const allRuns: GitHubWorkflowRun[] = [];
-	let page = 1;
-	let totalCount: number | null = null;
-	let fetched = 0;
-	const cutoff = createdCutoff(created);
-	const totalStart = typeof performance !== 'undefined' ? performance.now() : 0;
-	while (true) {
-		const pageStart = typeof performance !== 'undefined' ? performance.now() : 0;
-		const { data } = await octokit.rest.actions.listWorkflowRunsForRepo({
+	const startedAt = Date.now();
+	const state: WorkflowRunRequestState = {
+		serial: false,
+		serialTail: Promise.resolve(),
+		retries: 0,
+		rateLimitRemaining: null
+	};
+	let expected = 0;
+	let pageCount = 0;
+	let uniqueCount = 0;
+	let fallbackReason: string | null = null;
+	let progressFloor = 0;
+	let attempts = 0;
+
+	try {
+		for (; attempts < MAX_CONCURRENT_IMPORT_ATTEMPTS; attempts++) {
+			try {
+				const fetched = await fetchWorkflowRunsConcurrently(
+					octokit,
+					owner,
+					repo,
+					state,
+					created,
+					onTiming,
+					onProgress,
+					progressFloor,
+					pageCount
+				);
+				attempts++;
+				pageCount += fetched.pages;
+				expected = fetched.sourceTotal;
+				uniqueCount = fetched.runs.length;
+				fallbackReason = null;
+				return fetched.runs;
+			} catch (cause) {
+				if (!(cause instanceof UnstableWorkflowRunListingError)) throw cause;
+				fallbackReason = cause.message;
+				pageCount += cause.pages;
+				expected = cause.sourceTotal;
+				progressFloor = Math.max(progressFloor, cause.sourceTotal);
+			}
+		}
+		throw new UnstableWorkflowRunListingError(fallbackReason ?? 'unstable-listing');
+	} catch (cause) {
+		if (isGitHubUnauthorizedError(cause)) throw cause;
+		fallbackReason ??= cause instanceof Error ? cause.message : 'concurrent-import-failed';
+		const fallback = await fetchWorkflowRunsSerially(
+			octokit,
 			owner,
 			repo,
-			per_page: 100,
-			page
-		});
-		const runs = ((data.workflow_runs ?? []) as unknown as GitHubWorkflowRun[]).map(
-			normalizeWorkflowRun
+			created,
+			state,
+			onTiming,
+			onProgress,
+			progressFloor,
+			pageCount
 		);
-		// Capture total_count from first page response
-		if (totalCount === null) {
-			totalCount = typeof data.total_count === 'number' ? data.total_count : runs.length;
-		}
-		if (onTiming && typeof performance !== 'undefined') {
-			onTiming(`GitHub: listWorkflowRunsForRepo page ${page}`, performance.now() - pageStart, {
-				runsInPage: runs.length
-			});
-		}
-		fetched += runs.length;
-		allRuns.push(...runs.filter((run) => !isBeforeCutoff(run, cutoff)));
-		onProgress?.(fetched, totalCount, page);
-		if (runs.length < 100 || runs.some((run) => isBeforeCutoff(run, cutoff))) break;
-		page++;
-	}
-	if (onTiming && typeof performance !== 'undefined') {
-		onTiming('GitHub: fetchAllWorkflowRunsForRepo (total)', performance.now() - totalStart, {
-			totalRuns: allRuns.length,
-			pages: page
+		pageCount += fallback.pages;
+		expected = fallback.sourceTotal;
+		const runs = uniqueSortedRuns(fallback.runs);
+		uniqueCount = runs.length;
+		return runs;
+	} finally {
+		const durationMs = Date.now() - startedAt;
+		onTiming?.('GitHub: fetchAllWorkflowRunsForRepo (total)', durationMs, {
+			totalRuns: uniqueCount,
+			pages: pageCount
+		});
+		console.info('[workflow-run-import]', {
+			repository: `${owner}/${repo}`,
+			lookback: created ?? 'all',
+			expectedRuns: expected,
+			uniqueRuns: uniqueCount,
+			attempts,
+			pages: pageCount,
+			durationMs,
+			retries: state.retries,
+			finalConcurrency: state.serial ? 1 : WORKFLOW_RUN_CONCURRENCY,
+			rateLimitRemaining: state.rateLimitRemaining,
+			fallbackReason
 		});
 	}
-	return allRuns;
 }
 
 function listingSignature(run: GitHubWorkflowRun): string {
@@ -178,7 +489,8 @@ export async function fetchIncrementalWorkflowRunsForRepo(
 			owner,
 			repo,
 			per_page: 100,
-			page
+			page,
+			exclude_pull_requests: true
 		});
 		const pageRuns = ((data.workflow_runs ?? []) as unknown as GitHubWorkflowRun[]).map(
 			normalizeWorkflowRun
@@ -312,6 +624,23 @@ export async function fetchJobsForRun(
 	return data.jobs as unknown as GitHubJob[];
 }
 
+const trustedGitHubLogHosts = new Set([
+	'pipelines.actions.githubusercontent.com',
+	'results-receiver.actions.githubusercontent.com'
+]);
+
+export function isTrustedGitHubLogDownloadUrl(value: string): boolean {
+	try {
+		const url = new URL(value);
+		return (
+			url.protocol === 'https:' &&
+			(trustedGitHubLogHosts.has(url.hostname) || url.hostname.endsWith('.blob.core.windows.net'))
+		);
+	} catch {
+		return false;
+	}
+}
+
 /** Returns the actionable tail of a GitHub Actions job log without exposing the full noisy log. */
 export async function fetchJobLog(
 	accessToken: string,
@@ -327,6 +656,7 @@ export async function fetchJobLog(
 		}
 	);
 	const location = response.headers.get('location');
+	if (location && !isTrustedGitHubLogDownloadUrl(location)) return null;
 	const logResponse = location ? await fetch(location) : response;
 	if (!logResponse.ok) return null;
 	return (await logResponse.text()).slice(-1_000_000) || null;
@@ -1163,7 +1493,21 @@ export async function buildWorkflowDetailData(
 	await repairWorkflowRunTimings(octokit, owner, repo, runs, onRepairProgress);
 	if (cachedRuns == null) await onRunsFetched?.(runs);
 
-	const workflow = workflows.find((w) => w.id === workflowId);
+	const historicalRun = runs.find((run) => run.workflow_id === workflowId);
+	const workflow =
+		workflows.find((item) => item.id === workflowId) ??
+		(historicalRun
+			? {
+					id: workflowId,
+					name: historicalRun.name ?? `Workflow ${workflowId}`,
+					path: `historical/${workflowId}`,
+					state: 'historical',
+					html_url: historicalRun.html_url,
+					badge_url: '',
+					created_at: historicalRun.created_at,
+					updated_at: historicalRun.updated_at
+				}
+			: undefined);
 	if (!workflow) throw new Error(`Workflow ${workflowId} not found`);
 
 	// Same "all available history" case buildDashboardData handles: without this, buildRunTrend's

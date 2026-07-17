@@ -156,8 +156,12 @@ describe('Redis workflow cache', () => {
 		await storeWorkflowRuns('u1', 'acme', 'app', 'all', runs);
 		await storeWorkflowRuns('u1', 'acme', 'app', '7', runs.slice(0, 7));
 		const page = await getPaginatedRuns('u1', 'acme', 'app', 'all', 2, 50);
+		const workflowPage = await getPaginatedRuns('u1', 'acme', 'app', 'all', 1, 50, 1);
 		expect(page.items).toHaveLength(50);
 		expect(page.total).toBe(26_000);
+		expect(workflowPage.items).toHaveLength(50);
+		expect(workflowPage.total).toBe(8_667);
+		expect(workflowPage.items.every((item) => item.workflowId === 1)).toBe(true);
 		expect(await getWorkflowRuns('u1', 'acme', 'app', '7')).toHaveLength(7);
 		expect(await getWorkflowRuns('u2', 'acme', 'app', 'all')).toEqual([]);
 	}, 15_000);

@@ -18,8 +18,12 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	const page = Number(url.searchParams.get('page') ?? '1');
 	const pageSize = Number(url.searchParams.get('pageSize') ?? '20');
+	const workflowIdParam = url.searchParams.get('workflowId');
+	const workflowId = workflowIdParam === null ? undefined : Number(workflowIdParam);
 	if (!Number.isSafeInteger(page) || page < 1) throw error(400, 'page must be a positive integer');
 	if (!PAGE_SIZES.has(pageSize)) throw error(400, 'pageSize must be 20, 50, or 100');
+	if (workflowId !== undefined && (!Number.isSafeInteger(workflowId) || workflowId < 1))
+		throw error(400, 'workflowId must be a positive integer');
 
 	const { data: tracked } = await locals.supabase
 		.from('repositories')
@@ -38,7 +42,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 				repo,
 				lookback(url.searchParams.get('days')),
 				page,
-				pageSize
+				pageSize,
+				workflowId
 			)
 		);
 	} catch (cause) {

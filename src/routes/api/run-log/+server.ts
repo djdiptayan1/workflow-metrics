@@ -1,6 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { createOctokit, fetchJobLog, fetchJobsForRun } from '$lib/server/github';
+import { getGitHubAccessToken } from '$lib/server/secrets';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	const { user } = await locals.safeGetSession();
@@ -12,28 +13,26 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	} | null;
 	if (!body?.owner || !body.repo || !Number.isSafeInteger(body.runId))
 		throw error(400, 'Invalid run request');
-	const { data: connection } = await locals.supabase
-		.from('github_connections')
-		.select('access_token')
-		.eq('user_id', user.id)
-		.single();
-	const { data: tracked } = await locals.supabase
+	const [githubAccessToken, { data: tracked }] = await Promise.all([
+		getGitHubAccessToken(user.id),
+		locals.supabase
 		.from('repositories')
 		.select('id')
 		.eq('user_id', user.id)
 		.eq('owner', body.owner)
 		.eq('name', body.repo)
-		.maybeSingle();
-	if (!connection || !tracked) throw error(403, 'Repository not found or access denied');
+			.maybeSingle()
+	]);
+	if (!githubAccessToken || !tracked) throw error(403, 'Repository not found or access denied');
 	const jobs = await fetchJobsForRun(
-		createOctokit(connection.access_token),
+		createOctokit(githubAccessToken),
 		body.owner,
 		body.repo,
 		body.runId!
 	);
 	const failedJob = jobs.find((job) => job.conclusion === 'failure');
 	if (!failedJob) throw error(404, 'No failed job found for this run');
-	const log = await fetchJobLog(connection.access_token, body.owner, body.repo, failedJob.id);
+	const log = await fetchJobLog(githubAccessToken, body.owner, body.repo, failedJob.id);
 	if (!log) throw error(502, 'GitHub did not return a job log');
 	return json({ jobName: failedJob.name, log });
 };

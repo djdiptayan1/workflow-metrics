@@ -9,13 +9,15 @@
 		owner,
 		repo,
 		serverPagination = false,
-		lookback = '30'
+		lookback = '30',
+		workflowId
 	}: {
 		runs?: RecentRun[];
 		owner: string;
 		repo: string;
 		serverPagination?: boolean;
 		lookback?: '7' | '30' | '90' | 'all';
+		workflowId?: number;
 	} = $props();
 
 	let pageSize = $state(20);
@@ -46,7 +48,7 @@
 		loading = true;
 		loadError = null;
 		void fetch(
-			`/api/dashboard/runs?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&days=${lookback}&page=${requestedPage}&pageSize=${requestedPageSize}`,
+			`/api/dashboard/runs?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&days=${lookback}&page=${requestedPage}&pageSize=${requestedPageSize}${workflowId ? `&workflowId=${workflowId}` : ''}`,
 			{ signal: controller.signal }
 		)
 			.then(async (response) => {

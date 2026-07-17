@@ -1,5 +1,6 @@
 import { fail, redirect } from '@sveltejs/kit';
 import { Octokit } from '@octokit/rest';
+import { getGitHubAccessToken } from '$lib/server/secrets';
 import type { PageServerLoad, Actions } from './$types';
 
 export const load: PageServerLoad = async ({ locals, url }) => {
@@ -9,13 +10,15 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// Get the GitHub connection
 	const { data: connection } = await locals.supabase
 		.from('github_connections')
-		.select('*')
+		.select('id')
 		.eq('user_id', user.id)
 		.single();
+	const accessToken = await getGitHubAccessToken(user.id);
 
-	if (!connection) throw redirect(303, '/auth/login?error=' + encodeURIComponent('GitHub connection not found. Please sign in again.'));
+	if (!connection || !accessToken)
+		throw redirect(303, '/auth/login?error=' + encodeURIComponent('GitHub connection not found. Please sign in again.'));
 
-	const octokit = new Octokit({ auth: connection.access_token });
+	const octokit = new Octokit({ auth: accessToken });
 
 	// Fetch user's orgs and personal account
 	const [userResponse, orgsResponse] = await Promise.all([
@@ -54,13 +57,14 @@ export const actions: Actions = {
 
 		const { data: connection } = await locals.supabase
 			.from('github_connections')
-			.select('access_token')
+			.select('id')
 			.eq('user_id', user.id)
 			.single();
+		const accessToken = await getGitHubAccessToken(user.id);
 
-		if (!connection) return fail(401, { error: 'GitHub not connected', repos: [] });
+		if (!connection || !accessToken) return fail(401, { error: 'GitHub not connected', repos: [] });
 
-		const octokit = new Octokit({ auth: connection.access_token });
+		const octokit = new Octokit({ auth: accessToken });
 
 		const toRepo = (r: { id: number; name: string; full_name: string; private: boolean }) => ({
 			id: r.id,

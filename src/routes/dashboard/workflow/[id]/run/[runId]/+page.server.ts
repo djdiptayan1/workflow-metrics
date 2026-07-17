@@ -7,6 +7,7 @@ import {
 	isGitHubUnauthorizedError
 } from '$lib/server/github';
 import { MAX_WORKFLOW_DURATION_MS } from '$lib/server/run-timing';
+import { getGitHubAccessToken, hasAiApiKey } from '$lib/server/secrets';
 
 export const load: PageServerLoad = async ({ locals, params, url }) => {
 	const { user } = await locals.safeGetSession();
@@ -15,10 +16,10 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
 	const owner = url.searchParams.get('owner');
 	const repo = url.searchParams.get('repo');
 	if (!Number.isSafeInteger(runId) || !owner || !repo) throw error(400, 'Invalid workflow run');
-	const [{ data: connection }, { data: tracked }, { data: settings }] = await Promise.all([
+	const [{ data: connection }, { data: tracked }, accessToken, hasAiKey] = await Promise.all([
 		locals.supabase
 			.from('github_connections')
-			.select('access_token')
+			.select('id')
 			.eq('user_id', user.id)
 			.single(),
 		locals.supabase
@@ -28,12 +29,13 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
 			.eq('owner', owner)
 			.eq('name', repo)
 			.maybeSingle(),
-		locals.supabase.from('user_settings').select('ai_api_key').eq('user_id', user.id).single()
+		getGitHubAccessToken(user.id),
+		hasAiApiKey(user.id)
 	]);
-	if (!connection || !tracked) throw error(403, 'Repository not found or access denied');
-	const hasAiKey = !!settings?.ai_api_key;
+	if (!connection || !tracked || !accessToken)
+		throw error(403, 'Repository not found or access denied');
 
-	const octokit = createOctokit(connection.access_token);
+	const octokit = createOctokit(accessToken);
 	try {
 		const { data: run } = await octokit.rest.actions.getWorkflowRun({
 			owner,
@@ -78,7 +80,7 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
 		}
 		const failedJob = jobs.find((job) => job.conclusion === 'failure') ?? null;
 		const failureExcerpt = failedJob
-			? await fetchJobFailureExcerpt(connection.access_token, owner, repo, failedJob.id).catch(
+			? await fetchJobFailureExcerpt(accessToken, owner, repo, failedJob.id).catch(
 					() => null
 				)
 			: null;

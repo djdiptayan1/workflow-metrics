@@ -6,6 +6,7 @@ import {
 	isGitHubUnauthorizedError
 } from '$lib/server/github';
 import { AI_PROVIDER_LABELS, AI_PROVIDER_MODELS, type AIProvider } from '$lib/server/mistral';
+import { getGitHubAccessToken, hasAiApiKey } from '$lib/server/secrets';
 import {
 	acquireSyncLock,
 	getWorkflowDetailSnapshot,
@@ -16,6 +17,21 @@ import {
 	type ActionsLookback
 } from '$lib/server/workflow-runs-cache';
 import type { PageServerLoad } from './$types';
+
+const MAX_TREND_POINTS = 500;
+const compactDetailData = (detailData: Awaited<ReturnType<typeof buildWorkflowDetailData>>) => {
+	const stride = Math.max(1, Math.ceil(detailData.durationTrend.length / MAX_TREND_POINTS));
+	return {
+		...detailData,
+		durationTrend:
+			stride === 1
+				? detailData.durationTrend
+				: detailData.durationTrend.filter(
+						(_, index) => index % stride === 0 || index === detailData.durationTrend.length - 1
+					),
+		recentRuns: []
+	};
+};
 
 export const load: PageServerLoad = async ({ locals, url, params }) => {
 	const { user } = await locals.safeGetSession();
@@ -30,11 +46,12 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 
 	const { data: connection } = await locals.supabase
 		.from('github_connections')
-		.select('access_token')
+		.select('id')
 		.eq('user_id', user.id)
 		.single();
+	const accessToken = await getGitHubAccessToken(user.id);
 
-	if (!connection) throw redirect(303, '/auth/login');
+	if (!connection || !accessToken) throw redirect(303, '/auth/login');
 
 	// Check user has access to this repo
 	const { data: repo } = await locals.supabase
@@ -47,13 +64,14 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 
 	if (!repo) throw error(403, 'Repository not found or access denied');
 
-	const { data: settings } = await locals.supabase
-		.from('user_settings')
-		.select('ai_provider, ai_api_key, ai_model, actions_lookback, dashboard_refresh_interval')
-		.eq('user_id', user.id)
-		.single();
-
-	const hasAiKey = !!settings?.ai_api_key;
+	const [{ data: settings }, hasAiKey] = await Promise.all([
+		locals.supabase
+			.from('user_settings')
+			.select('ai_provider, ai_model, actions_lookback, dashboard_refresh_interval')
+			.eq('user_id', user.id)
+			.single(),
+		hasAiApiKey(user.id)
+	]);
 	const actionsLookback = (settings?.actions_lookback ?? '30') as ActionsLookback;
 	const refreshInterval = settings?.dashboard_refresh_interval ?? '5';
 	const freshnessMs = refreshInterval === 'realtime' ? 0 : Number(refreshInterval) * 60_000;
@@ -63,7 +81,7 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 		? `the last ${lookbackDays} days`
 		: 'all available history';
 
-	const octokit = createOctokit(connection.access_token);
+	const octokit = createOctokit(accessToken);
 
 	try {
 		const provider = (settings?.ai_provider ?? 'openai') as AIProvider;
@@ -77,13 +95,14 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 			freshnessMs
 		);
 		const response = (detailData: Awaited<ReturnType<typeof buildWorkflowDetailData>>) => ({
-			detailData,
+			detailData: compactDetailData(detailData),
 			owner: ownerParam,
 			repo: repoParam,
 			hasAiKey,
 			aiModelLabel,
 			lookbackLabel,
-			lookbackDescription
+			lookbackDescription,
+			actionsLookback
 		});
 		if (snapshot && !snapshot.isStale) return response(snapshot.data);
 
@@ -127,15 +146,16 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 					fetchedRuns
 				);
 			}
+			const compactDetail = compactDetailData(detailData);
 			await setWorkflowDetailSnapshot(
 				user.id,
 				ownerParam,
 				repoParam,
 				actionsLookback,
 				workflowId,
-				detailData
+				compactDetail
 			);
-			return detailData;
+			return compactDetail;
 		};
 		const scope = `workflow-${workflowId}`;
 		if (snapshot?.isStale) {

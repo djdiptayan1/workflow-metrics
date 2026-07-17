@@ -5,22 +5,18 @@
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
-	let showAiKey = $state(false);
 	let savingSettings = $state(false);
 	let savingAiSettings = $state(false);
-	let syncing = $state(false);
+
 	let aiProvider = $state<'openai' | 'gemini' | 'mistral'>('openai');
 	let aiApiKey = $state('');
+	let removeAiApiKey = $state(false);
 	let aiModel = $state('');
 	let aiModels = $state<string[]>([]);
 	let aiSettingsInitialized = false;
 	let loadingModels = $state(false);
 	let modelsError = $state('');
-	let workflowModes = $derived<Record<string, 'personal' | 'shared'>>({
-		...(data.workflowModes ?? {})
-	});
-	let workflowModeError = $state<string | null>(null);
-	let savingWorkflowMode = $state<string | null>(null);
+
 
 	// Single source of truth for every field either save form submits, so saving one
 	// form never reverts unsaved edits made in the other (both forms bind to these).
@@ -41,36 +37,9 @@
 		applyTheme(next);
 	}
 
-	async function setWorkflowMode(
-		repo: { id: string; owner: string; name: string },
-		mode: 'personal' | 'shared'
-	) {
-		savingWorkflowMode = repo.id;
-		workflowModeError = null;
-		try {
-			const response = await fetch('/api/workflow-preferences', {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ owner: repo.owner, repo: repo.name, mode })
-			});
-			if (!response.ok)
-				throw new Error(
-					mode === 'shared'
-						? 'Only GitHub repository admins can enable shared workflow preferences.'
-						: 'Unable to update workflow preference mode.'
-				);
-			workflowModes = { ...workflowModes, [repo.id]: mode };
-		} catch (error) {
-			workflowModeError =
-				error instanceof Error ? error.message : 'Unable to update workflow preference mode.';
-		} finally {
-			savingWorkflowMode = null;
-		}
-	}
 	$effect(() => {
 		if (aiSettingsInitialized) return;
 		aiProvider = data.settings?.ai_provider ?? 'openai';
-		aiApiKey = data.settings?.ai_api_key ?? '';
 		aiModel = data.settings?.ai_model ?? '';
 		aiModels = aiModel ? [aiModel] : [];
 		aiSettingsInitialized = true;
@@ -83,7 +52,7 @@
 			const response = await fetch('/api/ai/models', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ provider: aiProvider, apiKey: aiApiKey })
+				body: JSON.stringify({ provider: aiProvider, apiKey: aiApiKey.trim() || undefined })
 			});
 			const result = (await response.json()) as { models?: string[]; message?: string };
 			if (!response.ok) throw new Error(result.message ?? 'Could not load models.');
@@ -204,9 +173,7 @@
 			</div>
 		</div>
 		<div class="divide-border divide-y">
-			{#if workflowModeError}
-				<p class="text-destructive px-5 py-3 text-xs" role="alert">{workflowModeError}</p>
-			{/if}
+
 			{#each data.repos as repo (repo.id)}
 				<div class="flex items-center gap-4 px-5 py-3">
 					<div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
@@ -242,31 +209,7 @@
 							</button>
 						</form>
 					{/if}
-					<div
-						class="border-border bg-muted/30 flex shrink-0 items-center rounded-md border p-0.5 text-xs"
-						role="group"
-						aria-label={`Workflow preference mode for ${repo.full_name}`}
-					>
-						<button
-							type="button"
-							onclick={() => setWorkflowMode(repo, 'personal')}
-							disabled={savingWorkflowMode === repo.id}
-							aria-pressed={workflowModes[repo.id] !== 'shared'}
-							class="min-h-11 rounded px-2 py-1 {workflowModes[repo.id] !== 'shared'
-								? 'bg-card text-foreground shadow-sm'
-								: 'text-muted-foreground'}">Personal</button
-						>
-						<button
-							type="button"
-							onclick={() => setWorkflowMode(repo, 'shared')}
-							disabled={savingWorkflowMode === repo.id}
-							aria-pressed={workflowModes[repo.id] === 'shared'}
-							title="Requires GitHub repository admin access"
-							class="min-h-11 rounded px-2 py-1 {workflowModes[repo.id] === 'shared'
-								? 'bg-card text-foreground shadow-sm'
-								: 'text-muted-foreground'}">Shared</button
-						>
-					</div>
+
 				</div>
 			{/each}
 		</div>
@@ -279,201 +222,6 @@
 			<p class="text-muted-foreground mt-0.5 text-xs">Configure AI-powered workflow optimisation</p>
 		</div>
 
-		<!-- GitHub App — required for "Apply as PR" -->
-		<div class="border-border space-y-3 border-b px-5 py-4">
-			<div class="flex items-start justify-between gap-4">
-				<div class="space-y-0.5">
-					<p class="text-foreground text-sm font-medium">GitHub App (AI optimisation)</p>
-					<p class="text-muted-foreground text-xs">
-						Install the Workflow Metrics GitHub App on accounts or organizations to enable the
-						"Apply as PR" feature. The app only requests write access to the repositories you
-						choose.
-					</p>
-				</div>
-				{#if data.installations.length > 0}
-					<span
-						class="border-success/20 bg-success/10 text-success flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium"
-					>
-						<svg
-							class="size-3"
-							viewBox="0 0 12 12"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"><path d="M2 6l3 3 5-5" /></svg
-						>
-						Installed
-					</span>
-				{:else}
-					<span
-						class="border-warning/20 bg-warning/10 text-warning flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium"
-					>
-						<svg
-							class="size-3"
-							viewBox="0 0 12 12"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"><circle cx="6" cy="6" r="5" /><path d="M6 4v2.5M6 8h.01" /></svg
-						>
-						Not installed
-					</span>
-				{/if}
-			</div>
-
-			{#if data.appError}
-				<p class="text-destructive text-xs">{data.appError}</p>
-			{/if}
-			{#if data.appSuccess}
-				<p class="text-success text-xs">GitHub App installed successfully.</p>
-			{/if}
-			{#if form?.syncError}
-				<p class="text-destructive text-xs">{form.syncError}</p>
-			{/if}
-			{#if form?.syncResult}
-				{#if form.syncResult.added > 0 || form.syncResult.removed > 0}
-					<p class="text-success text-xs">
-						{form.syncResult.added > 0 && form.syncResult.removed > 0
-							? `Synced: ${form.syncResult.added} added, ${form.syncResult.removed} removed.`
-							: form.syncResult.added > 0
-								? `Synced ${form.syncResult.added} installation${form.syncResult.added > 1 ? 's' : ''}.`
-								: `${form.syncResult.removed} installation${form.syncResult.removed > 1 ? 's' : ''} removed.`}
-					</p>
-				{:else if form.syncResult.notFound}
-					<p class="text-warning text-xs">
-						No installations found on GitHub matching your accounts. Make sure you installed the app
-						on the right account or organization.
-					</p>
-				{:else}
-					<p class="text-muted-foreground text-xs">Already up to date.</p>
-				{/if}
-			{/if}
-
-			<!-- List of existing installations -->
-			{#if data.installations.length > 0}
-				<div class="space-y-2">
-					{#each data.installations as inst (inst.id)}
-						<div
-							class="border-success/20 bg-success/5 flex items-center justify-between rounded-lg border px-3 py-2"
-						>
-							<div class="flex min-w-0 items-center gap-3">
-								{#if inst.account_avatar_url}
-									<img
-										src={inst.account_avatar_url}
-										alt=""
-										class="bg-muted size-9 shrink-0 rounded-full object-cover"
-										width="36"
-										height="36"
-									/>
-								{:else}
-									<div
-										class="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-full text-xs font-medium"
-										aria-hidden="true"
-									>
-										{(inst.account_name || inst.account_login).charAt(0).toUpperCase()}
-									</div>
-								{/if}
-								<div class="min-w-0 space-y-0.5">
-									<p class="text-foreground truncate text-xs font-medium">
-										{inst.account_name || `@${inst.account_login}`}
-										{#if inst.account_name}
-											<span class="text-muted-foreground font-normal">(@{inst.account_login})</span>
-										{/if}
-										<span class="text-muted-foreground ml-1 font-normal">({inst.account_type})</span
-										>
-									</p>
-									<p class="text-muted-foreground text-xs">
-										Installed {new Date(inst.created_at).toLocaleDateString()}
-									</p>
-								</div>
-							</div>
-							<a
-								href={inst.account_type === 'Organization'
-									? `https://github.com/organizations/${encodeURIComponent(inst.account_login)}/settings/installations`
-									: 'https://github.com/settings/installations'}
-								target="_blank"
-								rel="noopener noreferrer"
-								class="text-muted-foreground hover:text-destructive ml-4 shrink-0 text-xs transition-colors"
-							>
-								Uninstall on GitHub
-							</a>
-						</div>
-					{/each}
-				</div>
-			{/if}
-
-			<!-- Install / add more + sync -->
-			{#if data.hasGitHubApp}
-				<div
-					class="border-border bg-muted/20 flex items-center justify-between gap-3 rounded-lg border px-4 py-3"
-				>
-					<div class="min-w-0 space-y-0.5">
-						<p class="text-foreground text-xs font-medium">
-							{data.installations.length > 0
-								? 'Add another account or organization'
-								: 'Install GitHub App'}
-						</p>
-						<p class="text-muted-foreground text-xs">
-							Opens GitHub in a new tab. Use <strong>Refresh</strong> after changing installations on
-							GitHub.
-						</p>
-					</div>
-					<div class="flex shrink-0 items-center gap-2">
-						<!-- Install link — opens in new tab so the user keeps their place -->
-						<a
-							href="/auth/github-app"
-							target="_blank"
-							rel="noopener noreferrer"
-							class="bg-foreground text-background hover:bg-foreground/90 flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
-						>
-							<svg class="size-3.5" viewBox="0 0 24 24" fill="currentColor"
-								><path
-									d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
-								/></svg
-							>
-							Install on GitHub
-						</a>
-
-						<form
-							method="POST"
-							action="?/syncInstallations"
-							use:enhance={() => {
-								syncing = true;
-								return async ({ update }) => {
-									await update();
-									syncing = false;
-								};
-							}}
-						>
-							<button
-								type="submit"
-								disabled={syncing}
-								title="Refresh list from GitHub"
-								class="border-border text-foreground hover:bg-muted flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition-colors disabled:opacity-50"
-							>
-								<svg
-									class="size-3.5 {syncing ? 'animate-spin' : ''}"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="2"
-								>
-									<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
-									<path d="M21 3v5h-5" />
-								</svg>
-								{syncing ? 'Refreshing…' : 'Refresh'}
-							</button>
-						</form>
-					</div>
-				</div>
-			{:else}
-				<p class="text-muted-foreground text-xs">
-					The GitHub App is not configured on this server. Set <span
-						class="bg-muted rounded px-1 font-mono">GITHUB_APP_ID</span
-					>,
-					<span class="bg-muted rounded px-1 font-mono">GITHUB_APP_PRIVATE_KEY</span>, and
-					<span class="bg-muted rounded px-1 font-mono">GITHUB_APP_SLUG</span> to enable it.
-				</p>
-			{/if}
-		</div>
 
 		<form
 			method="POST"
@@ -525,57 +273,41 @@
 				</select>
 			</div>
 			<div class="space-y-2">
-				<label class="text-foreground block text-sm font-medium" for="ai_api_key">
-					AI API Key
-					<span class="text-muted-foreground ml-1 text-xs font-normal">(optional)</span>
-				</label>
+				<div class="flex items-center gap-2">
+					<label class="text-foreground block text-sm font-medium" for="ai_api_key">
+						Replace AI API key
+					</label>
+					<span
+						class={data.aiApiKeyConfigured
+							? 'bg-success/10 text-success rounded-full px-2 py-0.5 text-xs font-medium'
+							: 'bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs font-medium'}
+					>
+						{data.aiApiKeyConfigured ? 'Configured' : 'Not configured'}
+					</span>
+				</div>
 				<p class="text-muted-foreground text-xs">
-					Use the API key issued by the selected provider. Keys are stored securely and only used
+					Leave blank to keep the current key. Replacement keys are stored securely and only used
 					server-side.
 				</p>
-				<div class="flex gap-2">
+				<input
+					id="ai_api_key"
+					name="ai_api_key"
+					type="password"
+					bind:value={aiApiKey}
+					disabled={removeAiApiKey}
+					placeholder="Enter a replacement provider API key..."
+					class="bg-background border-input text-foreground focus:ring-ring w-full rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:outline-none disabled:opacity-50"
+				/>
+				<label class="text-muted-foreground flex items-center gap-2 text-xs">
 					<input
-						id="ai_api_key"
-						name="ai_api_key"
-						type={showAiKey ? 'text' : 'password'}
-						bind:value={aiApiKey}
-						placeholder="Enter your provider API key..."
-						class="bg-background border-input text-foreground focus:ring-ring flex-1 rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:outline-none"
+						name="remove_ai_api_key"
+						type="checkbox"
+						value="true"
+						bind:checked={removeAiApiKey}
+						class="border-input text-primary focus:ring-ring size-4 rounded focus:ring-2"
 					/>
-					<button
-						type="button"
-						onclick={() => (showAiKey = !showAiKey)}
-						aria-label={showAiKey ? 'Hide API key' : 'Show API key'}
-						aria-pressed={showAiKey}
-						class="border-border text-muted-foreground hover:text-foreground min-h-11 rounded-lg border px-3 py-2 transition-colors"
-					>
-						{#if showAiKey}
-							<svg
-								class="size-4"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-							>
-								<path
-									d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"
-								/>
-								<line x1="1" x2="23" y1="1" y2="23" />
-							</svg>
-						{:else}
-							<svg
-								class="size-4"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-							>
-								<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-								<circle cx="12" cy="12" r="3" />
-							</svg>
-						{/if}
-					</button>
-				</div>
+					Remove the stored API key
+				</label>
 			</div>
 			<div class="space-y-2">
 				<label class="text-foreground block text-sm font-medium" for="ai_model">Model</label>
@@ -587,13 +319,13 @@
 						disabled={aiModels.length === 0}
 						class="bg-background border-input text-foreground focus:ring-ring flex-1 rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:outline-none disabled:opacity-50"
 					>
-						{#if aiModels.length === 0}<option value="">Load models using your API key</option>{/if}
+						{#if aiModels.length === 0}<option value="">Load models with a replacement or stored API key</option>{/if}
 						{#each aiModels as model (model)}<option value={model}>{model}</option>{/each}
 					</select>
 					<button
 						type="button"
 						onclick={loadAiModels}
-						disabled={loadingModels || !aiApiKey.trim()}
+						disabled={loadingModels || removeAiApiKey}
 						class="border-border text-foreground hover:bg-muted rounded-lg border px-3 py-2 text-sm transition-colors disabled:opacity-50"
 					>
 						{loadingModels ? 'Loading…' : 'Load models'}
@@ -646,7 +378,6 @@
 				</div>
 			{/if}
 			<input type="hidden" name="ai_provider" value={aiProvider} />
-			<input type="hidden" name="ai_api_key" value={aiApiKey} />
 			<input type="hidden" name="ai_model" value={aiModel} />
 			<!-- Theme -->
 			<div class="space-y-2">

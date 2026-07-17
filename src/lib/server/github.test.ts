@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	createOctokit,
 	isGitHubUnauthorizedError,
@@ -12,7 +12,8 @@ import {
 	buildDashboardData,
 	buildWorkflowDetailData,
 	fetchIncrementalWorkflowRunsForRepo,
-	fetchIncrementalSingleWorkflowRuns
+	fetchIncrementalSingleWorkflowRuns,
+	isTrustedGitHubLogDownloadUrl
 } from './github';
 import type { GitHubWorkflow, GitHubWorkflowRun, GitHubJob } from '$lib/types/github';
 
@@ -20,6 +21,7 @@ import type { GitHubWorkflow, GitHubWorkflowRun, GitHubJob } from '$lib/types/gi
 vi.mock('@octokit/rest', () => ({
 	Octokit: vi.fn().mockImplementation(() => ({
 		request: vi.fn(),
+		paginate: vi.fn(async (method, options) => (await method(options)).data.workflows),
 		rest: {
 			actions: {
 				listRepoWorkflows: vi.fn(),
@@ -39,6 +41,25 @@ describe('createOctokit', () => {
 	it('creates Octokit instance with access token', () => {
 		const octokit = createOctokit('test-token');
 		expect(octokit).toBeDefined();
+	});
+});
+
+describe('isTrustedGitHubLogDownloadUrl', () => {
+	it.each([
+		'https://pipelines.actions.githubusercontent.com/logs',
+		'https://results-receiver.actions.githubusercontent.com/logs',
+		'https://example.blob.core.windows.net/logs'
+	])('accepts trusted HTTPS log download hosts: %s', (url) => {
+		expect(isTrustedGitHubLogDownloadUrl(url)).toBe(true);
+	});
+
+	it.each([
+		'http://pipelines.actions.githubusercontent.com/logs',
+		'https://api.github.com/logs',
+		'https://127.0.0.1/logs',
+		'not-a-url'
+	])('rejects untrusted log download targets: %s', (url) => {
+		expect(isTrustedGitHubLogDownloadUrl(url)).toBe(false);
 	});
 });
 
@@ -154,7 +175,8 @@ describe('fetchWorkflowRuns', () => {
 			owner: 'owner',
 			repo: 'repo',
 			per_page: 50,
-			page: 2
+			page: 2,
+			exclude_pull_requests: true
 		});
 	});
 
@@ -170,6 +192,7 @@ describe('fetchWorkflowRuns', () => {
 			repo: 'repo',
 			per_page: 100,
 			page: 1,
+			exclude_pull_requests: true,
 			created: '>=2024-01-01'
 		});
 	});
@@ -205,48 +228,53 @@ describe('fetchIncrementalWorkflowRunsForRepo', () => {
 		} as never);
 		const result = await fetchIncrementalWorkflowRunsForRepo(octokit, 'owner', 'repo', cachedRuns);
 		expect(octokit.rest.actions.listWorkflowRunsForRepo).toHaveBeenCalledTimes(1);
+		expect(octokit.rest.actions.listWorkflowRunsForRepo).toHaveBeenCalledWith(
+			expect.objectContaining({ exclude_pull_requests: true })
+		);
 		expect(result[0].timing_quality).toBe('repaired');
 		expect(result[0].effective_completed_at).toBe('2026-01-01T00:20:00Z');
 	});
 });
 
 describe('fetchAllWorkflowRunsForRepo', () => {
-	it('paginates through all runs', async () => {
-		const octokit = createOctokit('test-token');
-		const mockRuns1 = Array(100).fill({ id: 1, status: 'completed' } as GitHubWorkflowRun);
-		const mockRuns2 = [{ id: 101, status: 'completed' } as GitHubWorkflowRun];
+	let consoleInfoSpy: ReturnType<typeof vi.spyOn>;
+	const response = (runs: GitHubWorkflowRun[], total = runs.length) =>
+		({
+			data: { workflow_runs: runs, total_count: total },
+			headers: { 'x-ratelimit-remaining': '4000' }
+		}) as never;
+	const run = (id: number, createdAt: string): GitHubWorkflowRun =>
+		({ id, workflow_id: 1, status: 'completed', created_at: createdAt }) as GitHubWorkflowRun;
 
-		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo)
-			.mockResolvedValueOnce({ data: { workflow_runs: mockRuns1, total_count: 101 } } as never)
-			.mockResolvedValueOnce({ data: { workflow_runs: mockRuns2 } } as never);
-
-		const result = await fetchAllWorkflowRunsForRepo(octokit, 'owner', 'repo', '>=2024-01-01');
-		expect(result).toHaveLength(101);
+	beforeEach(() => {
+		consoleInfoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
 	});
 
-	it('stops when less than 100 runs returned', async () => {
-		const octokit = createOctokit('test-token');
-		const mockRuns = [{ id: 1, status: 'completed' } as GitHubWorkflowRun];
-
-		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockResolvedValue({
-			data: { workflow_runs: mockRuns, total_count: 1 }
-		} as never);
-
-		const result = await fetchAllWorkflowRunsForRepo(octokit, 'owner', 'repo', '>=2024-01-01');
-		expect(result).toHaveLength(1);
-		expect(octokit.rest.actions.listWorkflowRunsForRepo).toHaveBeenCalledTimes(1);
+	afterEach(() => {
+		vi.useRealTimers();
+		consoleInfoSpy.mockRestore();
 	});
 
-	it('calls onProgress callback', async () => {
+	const runsForPage = (total: number, page: number) => {
+		const offset = (page - 1) * 100;
+		return Array.from({ length: Math.max(0, Math.min(100, total - offset)) }, (_, index) => {
+			const id = total - offset - index;
+			return run(id, new Date(Date.UTC(2024, 0, 1) + id * 1_000).toISOString());
+		});
+	};
+
+	it('keeps GitHub unfiltered, filters the lookback locally, and omits pull request payloads', async () => {
 		const octokit = createOctokit('test-token');
-		const mockRuns = [{ id: 1, status: 'completed' } as GitHubWorkflowRun];
+		const runs = [run(2, '2024-01-03T00:00:00Z'), run(1, '2023-12-31T00:00:00Z')];
+		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockImplementation(
+			async (rawOptions) => {
+				const options = rawOptions!;
+				return options.per_page === 1 ? response([runs[0]], 2) : response(runs, 2);
+			}
+		);
 		const onProgress = vi.fn();
 
-		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockResolvedValue({
-			data: { workflow_runs: mockRuns, total_count: 1 }
-		} as never);
-
-		await fetchAllWorkflowRunsForRepo(
+		const result = await fetchAllWorkflowRunsForRepo(
 			octokit,
 			'owner',
 			'repo',
@@ -254,47 +282,185 @@ describe('fetchAllWorkflowRunsForRepo', () => {
 			undefined,
 			onProgress
 		);
-		expect(onProgress).toHaveBeenCalledWith(1, 1, 1);
+
+		expect(result.map((item) => item.id)).toEqual([2]);
+		expect(onProgress).toHaveBeenCalledWith(2, 2, 1);
+		expect(
+			vi
+				.mocked(octokit.rest.actions.listWorkflowRunsForRepo)
+				.mock.calls.every(
+					([options]) => options?.exclude_pull_requests === true && !('created' in options)
+				)
+		).toBe(true);
 	});
 
-	it('omits the created filter when importing all available history', async () => {
+	it.each([0, 99, 1_000])('imports %i stable runs exactly', async (total) => {
 		const octokit = createOctokit('test-token');
-		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockResolvedValue({
-			data: { workflow_runs: [], total_count: 0 }
-		} as never);
+		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockImplementation(
+			async (rawOptions) => {
+				const options = rawOptions!;
+				return options.per_page === 1
+					? response(runsForPage(total, 1).slice(0, 1), total)
+					: response(runsForPage(total, options.page!), total);
+			}
+		);
 
-		await fetchAllWorkflowRunsForRepo(octokit, 'owner', 'repo');
+		const result = await fetchAllWorkflowRunsForRepo(octokit, 'owner', 'repo');
 
-		expect(octokit.rest.actions.listWorkflowRunsForRepo).toHaveBeenCalledWith({
-			owner: 'owner',
-			repo: 'repo',
-			per_page: 100,
-			page: 1
-		});
+		expect(result).toHaveLength(total);
+		expect(new Set(result.map((item) => item.id)).size).toBe(total);
 	});
 
-	it('paginates unfiltered and stops locally at the lookback cutoff', async () => {
+	it('never exceeds three concurrent page requests and keeps progress monotonic', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2024-01-02T00:00:00Z'));
 		const octokit = createOctokit('test-token');
-		const runs = Array.from({ length: 100 }, (_, index) => ({
-			id: index + 1,
-			status: 'completed',
-			created_at: index === 99 ? '2023-12-31T23:59:59Z' : '2024-01-02T00:00:00Z'
-		})) as GitHubWorkflowRun[];
-		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockResolvedValue({
-			data: { workflow_runs: runs, total_count: 10_000 }
-		} as never);
+		let active = 0;
+		let maxActive = 0;
+		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockImplementation(
+			async (rawOptions) => {
+				const options = rawOptions!;
+				if (options.per_page === 1) return response(runsForPage(400, 1).slice(0, 1), 400);
+				if (options.page === 1) return response(runsForPage(400, 1), 400);
+				active++;
+				maxActive = Math.max(maxActive, active);
+				await new Promise((resolve) => setTimeout(resolve, (5 - options.page!) * 10));
+				active--;
+				return response(runsForPage(400, options.page!), 400);
+			}
+		);
+		const onProgress = vi.fn();
+		const pending = fetchAllWorkflowRunsForRepo(
+			octokit,
+			'owner',
+			'repo',
+			'>=2024-01-01',
+			undefined,
+			onProgress
+		);
+		await vi.runAllTimersAsync();
+		await pending;
+
+		expect(maxActive).toBe(3);
+		expect(onProgress.mock.calls.map(([fetched]) => fetched)).toEqual([100, 200, 300, 400]);
+		expect(onProgress.mock.calls.map(([, , page]) => page)).toEqual([1, 2, 3, 4]);
+	});
+
+	it('retries rate limits and serializes subsequent requests', async () => {
+		const octokit = createOctokit('test-token');
+		let calls = 0;
+		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockImplementation(
+			async (rawOptions) => {
+				const options = rawOptions!;
+				calls++;
+				if (calls === 1)
+					throw {
+						status: 429,
+						response: { status: 429, headers: { 'retry-after': '0' } }
+					};
+				return options.per_page === 1
+					? response([run(1, '2024-01-01T12:00:00Z')], 1)
+					: response([run(1, '2024-01-01T12:00:00Z')], 1);
+			}
+		);
+
+		await fetchAllWorkflowRunsForRepo(octokit, 'owner', 'repo', '>=2024-01-01');
+
+		expect(calls).toBe(3);
+		expect(console.info).toHaveBeenCalledWith(
+			'[workflow-run-import]',
+			expect.objectContaining({ retries: 1, finalConcurrency: 1, fallbackReason: null })
+		);
+	});
+
+	it('retries the concurrent import when the total or newest-run anchor changes', async () => {
+		const octokit = createOctokit('test-token');
+		let attempt = 0;
+		const onProgress = vi.fn();
+		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockImplementation(
+			async (rawOptions) => {
+				const options = rawOptions!;
+				if (options.per_page === 100 && options.page === 1) attempt++;
+				const total = attempt === 1 ? 200 : 199;
+				return options.per_page === 1
+					? response(runsForPage(199, 1).slice(0, 1), 199)
+					: response(runsForPage(total, options.page!), total);
+			}
+		);
+
+		const result = await fetchAllWorkflowRunsForRepo(
+			octokit,
+			'owner',
+			'repo',
+			undefined,
+			undefined,
+			onProgress
+		);
+
+		expect(attempt).toBe(2);
+		expect(result).toHaveLength(199);
+		expect(onProgress.mock.calls.map(([, , page]) => page)).toEqual([1, 2, 3, 4]);
+		expect(onProgress.mock.calls.map(([fetched]) => fetched)).toEqual([100, 200, 200, 200]);
+		expect(console.info).toHaveBeenCalledWith(
+			'[workflow-run-import]',
+			expect.objectContaining({ attempts: 2, fallbackReason: null })
+		);
+	});
+
+	it('falls back to serial pagination after two unstable concurrent attempts', async () => {
+		const octokit = createOctokit('test-token');
+		let dataPageOneCalls = 0;
+		const onProgress = vi.fn();
+		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockImplementation(
+			async (rawOptions) => {
+				const options = rawOptions!;
+				if (options.per_page === 100 && options.page === 1) dataPageOneCalls++;
+				if (dataPageOneCalls >= 3) return response(runsForPage(2, 1), 2);
+				return options.per_page === 1
+					? response(runsForPage(1, 1), 1)
+					: response(runsForPage(2, options.page!), 2);
+			}
+		);
+
+		const result = await fetchAllWorkflowRunsForRepo(
+			octokit,
+			'owner',
+			'repo',
+			undefined,
+			undefined,
+			onProgress
+		);
+
+		expect(dataPageOneCalls).toBe(3);
+		expect(result).toHaveLength(2);
+		expect(onProgress.mock.calls.map(([, , page]) => page)).toEqual([1, 2, 3]);
+		expect(console.info).toHaveBeenCalledWith(
+			'[workflow-run-import]',
+			expect.objectContaining({
+				attempts: 2,
+				fallbackReason: 'unstable-listing:2/1/2'
+			})
+		);
+	});
+
+	it('imports 26k unique runs exactly without a bulk response', async () => {
+		const octokit = createOctokit('test-token');
+		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockImplementation(
+			async (rawOptions) => {
+				const options = rawOptions!;
+				return options.per_page === 1
+					? response(runsForPage(26_000, 1).slice(0, 1), 26_000)
+					: response(runsForPage(26_000, options.page!), 26_000);
+			}
+		);
 
 		const result = await fetchAllWorkflowRunsForRepo(octokit, 'owner', 'repo', '>=2024-01-01');
 
-		expect(result).toHaveLength(99);
-		expect(octokit.rest.actions.listWorkflowRunsForRepo).toHaveBeenCalledTimes(1);
-		expect(octokit.rest.actions.listWorkflowRunsForRepo).toHaveBeenCalledWith({
-			owner: 'owner',
-			repo: 'repo',
-			per_page: 100,
-			page: 1
-		});
-	});
+		expect(result).toHaveLength(26_000);
+		expect(new Set(result.map((item) => item.id)).size).toBe(26_000);
+		expect(result[0].id).toBe(26_000);
+		expect(result.at(-1)?.id).toBe(1);
+	}, 15_000);
 });
 
 describe('fetchSingleWorkflowRuns', () => {
@@ -577,12 +743,20 @@ describe('buildDashboardData', () => {
 
 		expect(result.totalRuns).toBe(1);
 		expect(result.isAllTime).toBe(true);
-		expect(octokit.rest.actions.listWorkflowRunsForRepo).toHaveBeenCalledWith({
-			owner: 'owner',
-			repo: 'repo',
-			per_page: 100,
-			page: 1
-		});
+		expect(octokit.rest.actions.listWorkflowRunsForRepo).toHaveBeenCalledWith(
+			expect.objectContaining({
+				owner: 'owner',
+				repo: 'repo',
+				per_page: 100,
+				page: 1,
+				exclude_pull_requests: true
+			})
+		);
+		expect(
+			vi
+				.mocked(octokit.rest.actions.listWorkflowRunsForRepo)
+				.mock.calls.every(([options]) => options != null && !('created' in options))
+		).toBe(true);
 	});
 
 	it('does not fetch generated workflow paths as repository files', async () => {
@@ -776,6 +950,38 @@ describe('buildWorkflowDetailData', () => {
 			page: 1
 		});
 		vi.useRealTimers();
+	});
+
+	it('builds detail for a deleted workflow retained in run history', async () => {
+		const octokit = createOctokit('test-token');
+		const historicalRun = {
+			id: 1,
+			name: 'Deleted CI',
+			workflow_id: 999,
+			status: 'completed',
+			conclusion: 'success',
+			created_at: '2025-01-01T00:00:00Z',
+			updated_at: '2025-01-01T00:01:00Z',
+			run_started_at: '2025-01-01T00:00:00Z',
+			html_url: 'https://github.com/owner/repo/actions/runs/1'
+		} as GitHubWorkflowRun;
+		vi.mocked(octokit.rest.actions.listRepoWorkflows).mockResolvedValue({
+			data: { workflows: [] }
+		} as never);
+		vi.mocked(octokit.rest.actions.listJobsForWorkflowRun).mockResolvedValue({
+			data: { jobs: [] }
+		} as never);
+
+		const result = await buildWorkflowDetailData(octokit, 'owner', 'repo', 999, {
+			cachedRuns: [historicalRun]
+		});
+
+		expect(result).toMatchObject({
+			workflowId: 999,
+			workflowName: 'Deleted CI',
+			workflowPath: 'historical/999'
+		});
+		expect(octokit.rest.repos.getContent).not.toHaveBeenCalled();
 	});
 
 	it('throws error when workflow not found', async () => {

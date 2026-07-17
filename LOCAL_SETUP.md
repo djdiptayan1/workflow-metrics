@@ -15,18 +15,26 @@ The application always needs:
 
 - Supabase for authentication, settings, repositories, and preferences.
 - Redis for disposable GitHub run and dashboard caches.
-- A GitHub OAuth App for login and read access to GitHub repositories and Actions.
-- A GitHub App only if users need **Optimize with AI → Apply as PR**.
+- A GitHub OAuth App for read-only login and access to GitHub repositories, Actions, pull requests, and logs.
 - An AI provider key only if users need AI analysis or optimization.
+- A server-only `SECRETS_ENCRYPTION_KEY` to encrypt GitHub OAuth tokens and AI provider keys at rest.
 
 ## Security rules
 
-- Never commit `.env`, `supabase/.env`, Supabase secret keys, OAuth client secrets, GitHub App
-  private keys, or AI provider keys.
+- Never commit `.env`, `supabase/.env`, Supabase secret keys, OAuth client secrets, encryption keys, or AI provider keys.
 - `PUBLIC_SUPABASE_ANON_KEY` is a historical variable name. Put the current Supabase
   **publishable** key in it. This key is expected to be visible to the browser.
 - `SUPABASE_SERVICE_ROLE_KEY` is also a historical variable name. Put the current Supabase
   **secret** key in it. It bypasses Row Level Security and must remain server-only.
+- `SECRETS_ENCRYPTION_KEY` must be a base64url-encoded 32-byte key. It encrypts credentials at rest,
+  must remain server-only, and must be retained securely: changing or losing it prevents decrypting
+  existing credentials.
+- Generate a key with Node's built-in crypto module:
+
+  ```bash
+  node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+  ```
+
 - Legacy Supabase `anon` and `service_role` keys also work, but new hosted projects should prefer
   `sb_publishable_...` and `sb_secret_...` keys.
 - Keep the root `.env` file readable only by the deployment user:
@@ -129,8 +137,16 @@ supabase db push
 supabase migration list
 ```
 
-Expected result: every migration under `supabase/migrations/` appears applied to the linked remote
-project. Run `supabase db push` only from a trusted checkout because it changes the linked database.
+Expected result for a fresh project: every migration under `supabase/migrations/` appears applied to
+the linked remote project. Run `supabase db push` only from a trusted checkout because it changes the
+linked database.
+
+> **Existing hosted deployments:** do not apply migrations `021` and `022` together with a routine
+> `supabase db push`. Migration `022` deliberately fails while plaintext credentials remain. Apply
+> `021`, run the credential migration script and verify its dry run, then apply `022` as described in
+> [Migrate existing credentials](#migrate-existing-credentials). Take a database backup and run this
+> sequence in a maintenance window; it changes stored credentials and `022` permanently removes the
+> plaintext columns.
 
 #### A3. Get the project URL and API keys
 
@@ -169,7 +185,7 @@ URL and add both exact callback URLs to the redirect allow list.
 
 #### A5. Create the GitHub OAuth App used for login
 
-This must be a GitHub **OAuth App**, not the optional GitHub App described later.
+This is the application's only GitHub integration and is used for read-only access.
 
 1. In Supabase, open **Authentication → Sign In / Providers → GitHub**.
 2. Copy the callback URL shown there. It normally is:
@@ -200,6 +216,9 @@ For localhost with hosted Supabase, use:
 PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
 PUBLIC_SUPABASE_ANON_KEY=sb_publishable_...
 SUPABASE_SERVICE_ROLE_KEY=sb_secret_...
+
+# Server-only; generate with Node's built-in crypto command in Security rules.
+SECRETS_ENCRYPTION_KEY=<base64url-encoded 32-byte key>
 
 # Used only by direct pnpm/Node runs. Compose replaces it with redis://redis:6379.
 REDIS_URL=redis://127.0.0.1:6379
@@ -306,6 +325,9 @@ PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
 PUBLIC_SUPABASE_ANON_KEY=<local Publishable or ANON key>
 SUPABASE_SERVICE_ROLE_KEY=<local Secret or SERVICE_ROLE key>
 
+# Server-only; generate with Node's built-in crypto command in Security rules.
+SECRETS_ENCRYPTION_KEY=<base64url-encoded 32-byte key>
+
 # The app container reaches services on the host through this address.
 SUPABASE_INTERNAL_URL=http://host.docker.internal:54321
 
@@ -322,6 +344,45 @@ Why there are two Supabase URLs:
 - The browser needs `PUBLIC_SUPABASE_URL=http://127.0.0.1:54321`.
 - Inside the app container, `127.0.0.1` means the app container itself, so server requests use
   `SUPABASE_INTERNAL_URL=http://host.docker.internal:54321`.
+
+### Migrate existing credentials
+
+A fresh local database applies all migrations during `supabase start`; no separate credential migration
+is needed. For an **existing local database** that contains plaintext GitHub OAuth tokens or AI keys,
+perform this sequence before starting the updated application:
+
+1. Generate and securely retain `SECRETS_ENCRYPTION_KEY` as described in [Security rules](#security-rules).
+2. Apply pending local migrations. This applies `021_create_encrypted_user_secrets.sql` and then stops
+   at `022_remove_plaintext_credential_columns.sql` with the expected plaintext-credentials guard:
+
+   ```bash
+   supabase migration up --local
+   ```
+
+3. Run the credential migration in dry-run mode. Provide the local API URL, the service-role key from
+   `supabase status`, and the **same** server-only encryption key that the application will use:
+
+   ```bash
+   SUPABASE_URL=http://127.0.0.1:54321 SUPABASE_SERVICE_ROLE_KEY=<local-secret-key> SECRETS_ENCRYPTION_KEY=<base64url-encoded-32-byte-key> node scripts/migrate-user-secrets.mjs --dry-run
+   ```
+
+   Confirm that the reported `usersWithCredentials`, `githubTokens`, and `aiApiKeys` counts are expected.
+
+4. Run the migration without `--dry-run`:
+
+   ```bash
+   SUPABASE_URL=http://127.0.0.1:54321 SUPABASE_SERVICE_ROLE_KEY=<local-secret-key> SECRETS_ENCRYPTION_KEY=<base64url-encoded-32-byte-key> node scripts/migrate-user-secrets.mjs
+   ```
+
+5. Apply `022_remove_plaintext_credential_columns.sql`:
+
+   ```bash
+   supabase migration up --local
+   ```
+
+Do not rotate or replace `SECRETS_ENCRYPTION_KEY` after this migration without a planned credential
+re-encryption process. The script reads plaintext columns, writes AES-256-GCM ciphertext through
+service-role RPCs, and `022` removes the original columns.
 
 ## 4. Start with Docker Compose
 
@@ -380,70 +441,7 @@ docker compose down
 Use `docker compose down -v` only when intentionally deleting the disposable Redis cache and
 forcing a cold GitHub import.
 
-## 5. Optional GitHub App for Apply as PR
-
-Skip this section if users only need dashboards, logs, metrics, and AI suggestions. The OAuth App
-from the Supabase setup is enough for those features.
-
-Workflow Metrics uses this GitHub App only to create a branch, update workflow YAML, and open a pull
-request with an AI-generated optimization.
-
-### C1. Register the GitHub App
-
-1. Open [GitHub's New GitHub App page](https://github.com/settings/apps/new).
-2. Enter a unique **GitHub App name**.
-3. Set **Homepage URL** to the application URL.
-4. Leave **Callback URL** empty. This app does not request GitHub user-access tokens.
-5. Leave **Request user authorization (OAuth) during installation** off.
-6. Set **Setup URL** to:
-   - Local: `http://localhost:5173/auth/github-app/callback`
-   - Production: `https://metrics.example.com/auth/github-app/callback`
-7. Enable **Redirect on update**.
-8. Disable the webhook by clearing **Active**. This application does not consume GitHub webhooks.
-9. Set only these repository permissions:
-   - **Contents:** Read & write
-   - **Pull requests:** Read & write
-   - **Workflows:** Read & write
-10. Choose installation visibility:
-    - **Only on this account** for a private single-account deployment.
-    - **Any account** when other users or organizations must install it.
-11. Create the GitHub App.
-
-### C2. Get the GitHub App credentials
-
-On the GitHub App settings page:
-
-1. Copy **App ID** → `GITHUB_APP_ID`.
-2. Copy the slug from `github.com/apps/<slug>` → `GITHUB_APP_SLUG`.
-3. Under **Private keys**, click **Generate a private key** and save the downloaded `.pem` securely.
-4. Convert the PEM into one line containing literal `\n` separators:
-
-   ```bash
-   awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' /path/to/github-app.pem
-   ```
-
-5. Add the values to the root `.env`:
-
-   ```env
-   GITHUB_APP_ID=<numeric App ID>
-   GITHUB_APP_SLUG=<github-app-slug>
-   GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
-   ```
-
-6. Recreate the app container so it receives the new environment:
-
-   ```bash
-   docker compose up -d --no-build --force-recreate ci-observe
-   ```
-
-7. Sign in to Workflow Metrics, open **Settings**, click the GitHub App installation action, choose
-   the repositories, and return to Settings. Use **Sync installations** if the automatic return was
-   interrupted.
-
-Never commit the PEM file or its contents. Delete or rotate the GitHub private key immediately if it
-is exposed.
-
-## 6. Optional AI provider key
+## 5. Optional AI provider key
 
 AI features do not need a server environment variable. Each signed-in user configures a provider
 key in **Settings → AI Provider**.
@@ -462,13 +460,14 @@ Then:
 4. Load/select an available model.
 5. Save settings.
 
-The key is stored in the signed-in user's `user_settings` row and protected by that table's Row
-Level Security policy. Treat the database and its backups as secret-bearing infrastructure.
+The key is encrypted before storage in the private `user_secrets` schema; only server-side code using
+`SECRETS_ENCRYPTION_KEY` can decrypt it. Treat the database, encryption key, and backups as
+secret-bearing infrastructure.
 
 `AI_OPTIMIZATION_MODEL` is an optional server-side default-model override. Most installations do
 not need it.
 
-## 7. Source development instead of the published image
+## 6. Source development instead of the published image
 
 Install dependencies:
 
@@ -506,7 +505,7 @@ pnpm lint
 pnpm build
 ```
 
-## 8. Environment variable reference
+## 7. Environment variable reference
 
 | Variable                    | Required                     | Source and purpose                                                       |
 | --------------------------- | ---------------------------- | ------------------------------------------------------------------------ |
@@ -517,9 +516,7 @@ pnpm build
 | `REDIS_URL`                 | Yes for direct runs          | Compose overrides it with `redis://redis:6379`                           |
 | `PUBLIC_APP_URL`            | Production only              | Public HTTPS application origin used for OAuth return URLs               |
 | `ORIGIN`                    | Production only              | Adapter Node origin; normally the same as `PUBLIC_APP_URL`               |
-| `GITHUB_APP_ID`             | Apply as PR only             | Numeric GitHub App ID                                                    |
-| `GITHUB_APP_PRIVATE_KEY`    | Apply as PR only             | GitHub App PEM stored as a single-line secret                            |
-| `GITHUB_APP_SLUG`           | Apply as PR only             | Slug from the GitHub App URL                                             |
+| `SECRETS_ENCRYPTION_KEY`    | Yes                          | Base64url-encoded 32-byte credential-encryption key; server-only        |
 | `AI_OPTIMIZATION_MODEL`     | No                           | Optional default AI model override                                       |
 | `CI_OBSERVE_IMAGE`          | No                           | Compose image override; defaults to `djdiptayan/workflow-metrics:latest` |
 
@@ -529,7 +526,7 @@ The GitHub OAuth Client ID and Client secret are deliberately absent from this t
 - Local Supabase reads them from the shell as `GITHUB_OAUTH_CLIENT_ID` and
   `GITHUB_OAUTH_CLIENT_SECRET`; this runbook stores and sources them from `supabase/.env`.
 
-## 9. Updating an installation
+## 8. Updating an installation
 
 Pull the latest Compose and documentation changes, then pull and recreate the containers:
 
@@ -549,7 +546,7 @@ After changing any root `.env` value, recreate the application container:
 docker compose up -d --no-build --force-recreate ci-observe
 ```
 
-## 10. Verification checklist
+## 9. Verification checklist
 
 1. `docker compose ps` reports both services healthy.
 2. `curl --fail http://localhost:5173/api/health` returns `{"status":"ok"}`.
@@ -559,12 +556,12 @@ docker compose up -d --no-build --force-recreate ci-observe
 6. Opening a repository dashboard starts or reads the Redis-backed GitHub run cache.
 7. Dashboard → Settings → Dashboard does not repaginate all GitHub workflow runs while the cache is
    fresh.
-8. If configured, the GitHub App appears in Settings and **Apply as PR** can create a pull request in
-   an installed repository.
+8. GitHub access remains read-only: the app can read the selected repository data but does not create
+   branches, modify workflow files, or open pull requests.
 
 For local Supabase, inspect data at [http://127.0.0.1:54323](http://127.0.0.1:54323).
 
-## 11. Troubleshooting
+## 10. Troubleshooting
 
 ### Login returns to `/auth/login`
 
@@ -628,15 +625,7 @@ docker compose restart redis
 Redis is required. The application intentionally does not start an unbounded GitHub import when
 Redis is unavailable.
 
-### GitHub App installation or Apply as PR fails
 
-Confirm:
-
-- `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_APP_SLUG` are set in the running container.
-- The GitHub App uses the **Setup URL**, not Callback URL.
-- Contents, Pull requests, and Workflows permissions are all Read & write.
-- The app is installed on the target repository.
-- Updated permissions were approved on existing installations.
 
 ### Migrations are missing locally
 
@@ -664,7 +653,4 @@ This deletes only the Compose Redis volume. It does not delete hosted Supabase d
 - [Supabase GitHub login](https://supabase.com/docs/guides/auth/social-login/auth-github)
 - [Supabase database migrations](https://supabase.com/docs/guides/deployment/database-migrations)
 - [GitHub OAuth App registration](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app)
-- [GitHub App registration](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app)
-- [GitHub App permissions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app)
-- [GitHub App private keys](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps)
 - [Docker Compose environment variables](https://docs.docker.com/compose/how-tos/environment-variables/set-environment-variables/)

@@ -94,13 +94,8 @@
 
 	// ── Accordion open state ──────────────────────────────────────────────────
 	let openItems = new SvelteSet<string>();
-	// Checked items for PR creation
+	// Checked items for copying selected recommendations.
 	let checkedItems = new SvelteSet<string>();
-
-	// PR creation state
-	let applyingPr = $state(false);
-	let prError = $state<string | null>(null);
-	let prUrl = $state<string | null>(null);
 
 	// Copy feedback
 	let copiedId = $state<string | null>(null);
@@ -133,8 +128,7 @@
 	async function optimize(force = false) {
 		loading = true;
 		error = null;
-		prUrl = null;
-		prError = null;
+
 		currentStep = null;
 		completedSteps.clear();
 		stopCategoryAnimation();
@@ -225,47 +219,6 @@
 		entry?.result.optimizations.filter((o) => checkedItems.has(o.id)) ?? []
 	);
 
-	async function applyAsPr() {
-		if (!selectedOptimizations.length) return;
-		const count = selectedOptimizations.length;
-		if (
-			!confirm(
-				`Open a real pull request on ${owner}/${repo} with ${count} selected change${count > 1 ? 's' : ''}? This is visible to collaborators and can trigger CI.`
-			)
-		)
-			return;
-		applyingPr = true;
-		prError = null;
-		prUrl = null;
-
-		try {
-			const response = await fetch('/api/optimize/apply', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					workflowId,
-					workflowPath,
-					owner,
-					repo,
-					workflowName,
-					selectedOptimizations
-				})
-			});
-
-			if (!response.ok) {
-				const data = await response.json();
-				throw new Error(data.error ?? data.message ?? 'Failed to create PR');
-			}
-
-			const data = await response.json() as { prUrl: string; branchName: string };
-			prUrl = data.prUrl;
-			checkedItems.clear();
-		} catch (e) {
-			prError = e instanceof Error ? e.message : 'Unknown error';
-		} finally {
-			applyingPr = false;
-		}
-	}
 
 	function formatDate(iso: string): string {
 		return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
@@ -601,43 +554,20 @@
 				</div>
 			{/if}
 
-			<!-- Apply as PR + Copy selected (fallback when PR not available) -->
+			<!-- Copy selected recommendations -->
 			<div class="space-y-2 pt-1">
 				<p class="text-xs text-muted-foreground">
 					{checkedItems.size > 0
 						? `${checkedItems.size} optimization${checkedItems.size > 1 ? 's' : ''} selected`
-						: 'Select optimizations to apply as a PR or copy to paste manually'}
+						: 'Select optimizations to copy into your workflow manually'}
 				</p>
 				<div class="flex flex-wrap items-center gap-2">
-					<button
-						type="button"
-						onclick={applyAsPr}
-						disabled={checkedItems.size === 0 || applyingPr}
-						class="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors
-							{checkedItems.size > 0 && !applyingPr
-								? 'bg-primary text-primary-foreground hover:bg-primary/90'
-								: 'bg-muted text-muted-foreground cursor-not-allowed'}"
-					>
-						{#if applyingPr}
-							<svg class="size-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-								<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-								<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-							</svg>
-							Creating PR…
-						{:else}
-							<svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-								<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>
-								<path d="M6 9v6M15 18h-6M18 15V9a6 6 0 0 0-6-6"/>
-							</svg>
-							Apply {checkedItems.size > 0 ? `${checkedItems.size} ` : ''}as PR
-						{/if}
-					</button>
 					<button
 						type="button"
 						onclick={copySelectedCode}
 						disabled={checkedItems.size === 0}
 						class="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-border bg-background text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-						title="Copy selected code to paste into your workflow manually (e.g. when Apply as PR isn't available)"
+						title="Copy selected code to paste into your workflow manually"
 					>
 						{#if copiedAll}
 							<svg class="size-4 text-green-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -653,41 +583,7 @@
 						{/if}
 					</button>
 				</div>
-				<p class="text-xs text-muted-foreground/80">
-					If Apply as PR isn't available (e.g. GitHub App not installed), use Copy selected or the copy icon on each block to paste changes into your workflow file.
-				</p>
 			</div>
-
-			<!-- PR success / error -->
-			{#if prUrl}
-				<div class="bg-green-500/10 border border-green-500/20 rounded-lg p-3 flex items-center gap-3">
-					<svg class="size-4 text-green-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-						<path d="m5 12 5 5L20 7"/>
-					</svg>
-					<p class="text-sm text-green-400 flex-1">Pull request created!</p>
-					<a
-						href={prUrl}
-						target="_blank"
-						rel="noopener noreferrer"
-						class="text-xs text-green-400 underline hover:no-underline"
-					>
-						View PR →
-					</a>
-				</div>
-			{/if}
-			{#if prError}
-				<div class="bg-destructive/10 border border-destructive/20 text-destructive rounded-lg p-3 text-xs space-y-1.5">
-					<p>{prError}</p>
-					{#if prError.includes('not installed') || prError.includes('GitHub App') || prError.includes('permission') || prError.includes('404') || prError.includes('401') || prError.includes('403')}
-						<p>
-						<a href="/settings" class="underline hover:no-underline font-medium">
-							Go to Settings → install the GitHub App
-						</a>
-							on this account or organization to enable write access.
-						</p>
-					{/if}
-				</div>
-			{/if}
 		{/if}
 	</div>
 </div>

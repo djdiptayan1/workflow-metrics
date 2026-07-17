@@ -1,6 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { Octokit } from '@octokit/rest';
 import { createOctokit, isGitHubUnauthorizedError } from '$lib/server/github';
+import { getGitHubAccessToken } from '$lib/server/secrets';
 import type { GitHubWorkflowRun } from '$lib/types/github';
 import type { RequestHandler } from './$types';
 
@@ -106,12 +107,8 @@ async function getRequestContext(locals: App.Locals, owner: string, repo: string
 	const { user } = await locals.safeGetSession();
 	if (!user) throw error(401, 'Unauthorized');
 
-	const [{ data: connection }, { data: repository }] = await Promise.all([
-		locals.supabase
-			.from('github_connections')
-			.select('access_token')
-			.eq('user_id', user.id)
-			.single(),
+	const [githubAccessToken, { data: repository }] = await Promise.all([
+		getGitHubAccessToken(user.id),
 		locals.supabase
 			.from('repositories')
 			.select('id')
@@ -121,9 +118,9 @@ async function getRequestContext(locals: App.Locals, owner: string, repo: string
 			.single()
 	]);
 
-	if (!connection) throw error(401, 'GitHub connection not found. Please sign in again.');
+	if (!githubAccessToken) throw error(401, 'GitHub connection not found. Please sign in again.');
 	if (!repository) throw error(404, 'Repository is not tracked.');
-	return createOctokit(connection.access_token);
+	return createOctokit(githubAccessToken);
 }
 
 export const GET: RequestHandler = async ({ url, locals }) => {

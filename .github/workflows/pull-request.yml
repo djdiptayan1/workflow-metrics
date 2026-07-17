@@ -39,7 +39,6 @@ jobs:
             github.com:443
             ingest.codecov.io:443
             keybase.io:443
-            o26192.ingest.us.sentry.io:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443

@@ -277,13 +277,15 @@ export async function getPaginatedRuns(
 	repo: string,
 	lookback: ActionsLookback,
 	page: number,
-	pageSize: number
+	pageSize: number,
+	workflowId?: number
 ): Promise<PaginatedRuns> {
 	const client = await redis();
 	const cacheKeys = keys(userId, owner, repo, lookback);
-	const total = await client.zCard(cacheKeys.repoIndex);
+	const index = workflowId ? cacheKeys.workflowIndex(workflowId) : cacheKeys.repoIndex;
+	const total = await client.zCard(index);
 	const start = (page - 1) * pageSize;
-	const ids = await client.zRange(cacheKeys.repoIndex, start, start + pageSize - 1, { REV: true });
+	const ids = await client.zRange(index, start, start + pageSize - 1, { REV: true });
 	const runs = await readRuns(client, cacheKeys.runs, ids);
 	return { items: runs.map(recentRun), total, page, pageSize };
 }

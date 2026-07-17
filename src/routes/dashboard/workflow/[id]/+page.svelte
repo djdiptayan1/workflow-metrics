@@ -19,8 +19,16 @@
 	import { keyWithIndex } from '$lib/components/dashboard/list-keys';
 
 	let { data }: { data: PageData } = $props();
-	let { detailData, owner, repo, hasAiKey, aiModelLabel, lookbackLabel, lookbackDescription } =
-		$derived(data);
+	let {
+		detailData,
+		owner,
+		repo,
+		hasAiKey,
+		aiModelLabel,
+		lookbackLabel,
+		lookbackDescription,
+		actionsLookback
+	} = $derived(data);
 	let metrics = $derived(detailData.metrics);
 
 	let showOptimize = $state(false);
@@ -31,13 +39,7 @@
 		'<svg class="size-4 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/></svg>';
 
 	// Estimated minutes "saved" by skips (median run duration × skipped count)
-	const medianDurationMs = $derived(
-		detailData.durationTrend.length > 0
-			? ([...detailData.durationTrend].sort((a, b) => a.durationMs - b.durationMs)[
-					Math.floor(detailData.durationTrend.length / 2)
-				]?.durationMs ?? 0)
-			: 0
-	);
+	const medianDurationMs = $derived(metrics.p50DurationMs);
 	const minutesSavedBySkips = $derived(
 		metrics.skippedCount > 0 ? Math.round((medianDurationMs * metrics.skippedCount) / 60_000) : 0
 	);
@@ -189,7 +191,9 @@
 			class="min-w-[140px] flex-1"
 			title="Avg Duration"
 			value={formatDuration(metrics.avgDurationMs)}
-			subtitle="P50: {formatDuration(metrics.p50DurationMs)} · P95: {formatDuration(metrics.p95DurationMs)}"
+			subtitle="P50: {formatDuration(metrics.p50DurationMs)} · P95: {formatDuration(
+				metrics.p95DurationMs
+			)}"
 			help="P50 is the median: half of runs finish faster. P95 means 95% of runs finish faster, highlighting the slower tail."
 		/>
 		<MetricCard
@@ -379,5 +383,12 @@
 	{/if}
 
 	<!-- Recent runs -->
-	<RecentRuns runs={detailData.recentRuns} {owner} {repo} />
+	<RecentRuns
+		runs={detailData.recentRuns}
+		{owner}
+		{repo}
+		serverPagination
+		lookback={actionsLookback}
+		workflowId={detailData.workflowId}
+	/>
 </div>

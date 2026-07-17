@@ -27,7 +27,7 @@ vi.mock('ai', () => ({
 }));
 
 // Import after mocks
-import { createAIModel, fetchAvailableModels, buildOptimizationPrompt, generateOptimizationReport, generateOptimizedYaml } from './mistral';
+import { createAIModel, fetchAvailableModels, buildOptimizationPrompt, generateOptimizationReport } from './mistral';
 import { generateText } from 'ai';
 import type { WorkflowMetrics } from '$lib/types/metrics';
 
@@ -259,121 +259,6 @@ jobs:
 				model: expect.anything(),
 				output: expect.anything(),
 				prompt: expect.stringContaining('Workflow: CI'),
-				maxOutputTokens: 4096
-			})
-		);
-		expect(vi.mocked(generateText).mock.calls[0][0].model).toEqual(
-			expect.objectContaining({ __modelId: 'gpt-4.1-mini' })
-		);
-	});
-});
-
-describe('generateOptimizedYaml', () => {
-	beforeEach(() => {
-		vi.clearAllMocks();
-	});
-
-	const mockWorkflowYaml = `
-name: CI
-on: push
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo build
-`;
-
-	const mockOptimizations = [
-		{
-			id: 'add-cache',
-			title: 'Add npm caching',
-			category: 'performance' as const,
-			explanation: 'Cache npm dependencies',
-			codeExample: 'uses: actions/setup-node@v4\nwith:\n  cache: npm',
-			effort: 'Low' as const
-		},
-		{
-			id: 'parallel-jobs',
-			title: 'Parallelize test jobs',
-			category: 'performance' as const,
-			explanation: 'Run tests in parallel',
-			effort: 'Medium' as const
-		}
-	];
-
-	it('generates optimized YAML successfully', async () => {
-		const mockYaml = `name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/cache@v4`;
-
-		vi.mocked(generateText).mockResolvedValue({
-			text: mockYaml
-		} as never);
-
-		const result = await generateOptimizedYaml(
-			'test-api-key',
-			'CI',
-			mockWorkflowYaml,
-			mockOptimizations
-		);
-
-		expect(result).toBe(mockYaml);
-	});
-
-	it('strips markdown code fences from output', async () => {
-		vi.mocked(generateText).mockResolvedValue({
-			text: '```yaml\nname: CI\n```'
-		} as never);
-
-		const result = await generateOptimizedYaml(
-			'test-api-key',
-			'CI',
-			mockWorkflowYaml,
-			mockOptimizations
-		);
-
-		expect(result).toBe('name: CI');
-	});
-
-	it('handles output without fences', async () => {
-		vi.mocked(generateText).mockResolvedValue({
-			text: 'name: CI\non: push'
-		} as never);
-
-		const result = await generateOptimizedYaml(
-			'test-api-key',
-			'CI',
-			mockWorkflowYaml,
-			mockOptimizations
-		);
-
-		expect(result).toBe('name: CI\non: push');
-	});
-
-	it('includes optimization descriptions in prompt', async () => {
-		vi.mocked(generateText).mockResolvedValue({ text: 'yaml' } as never);
-
-		await generateOptimizedYaml(
-			'test-api-key',
-			'CI',
-			mockWorkflowYaml,
-			mockOptimizations
-		);
-
-		const promptArg = vi.mocked(generateText).mock.calls[0][0].prompt;
-		expect(promptArg).toContain('Add npm caching');
-		expect(promptArg).toContain('Cache npm dependencies');
-		expect(promptArg).toContain('Parallelize test jobs');
-		expect(promptArg).toContain('uses: actions/setup-node@v4');
-	});
-
-	it('calls generateText with correct parameters', async () => {
-		vi.mocked(generateText).mockResolvedValue({ text: 'yaml' } as never);
-
-		await generateOptimizedYaml('test-api-key', 'CI', mockWorkflowYaml, mockOptimizations);
-
-		expect(generateText).toHaveBeenCalledWith(
-			expect.objectContaining({
-				model: expect.anything(),
-				prompt: expect.stringContaining('Original YAML'),
 				maxOutputTokens: 4096
 			})
 		);

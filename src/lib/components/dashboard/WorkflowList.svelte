@@ -5,7 +5,9 @@
 
 	type Environment = 'production' | 'development' | 'unknown';
 	type Preference = { workflow_id: number; is_pinned: boolean; environment: Environment };
-	type EnvFilter = 'all' | Environment;
+	type EnvFilter = 'all' | Environment | 'historical';
+	type SortMode = 'last-run' | 'name';
+	const HISTORICAL_CUTOFF_MS = 60 * 24 * 60 * 60 * 1000;
 
 	const ENV_LABEL: Record<Environment, string> = {
 		production: 'Production',
@@ -21,6 +23,7 @@
 	let query = $state('');
 	let showAll = $state(false);
 	let envFilter = $state<EnvFilter>('all');
+	let sortMode = $state<SortMode>('last-run');
 	let savingId = $state<number | null>(null);
 	let errorFor = $state<{ workflowId: number; message: string } | null>(null);
 
@@ -35,6 +38,17 @@
 		return preferences.find((preference) => preference.workflow_id === workflowId);
 	}
 
+	function isDormantHistorical(metric: WorkflowMetrics) {
+		if (!metric.workflowPath.startsWith('historical/')) return false;
+		const lastRunAt = metric.lastRunAt ? Date.parse(metric.lastRunAt) : NaN;
+		return !Number.isFinite(lastRunAt) || lastRunAt < Date.now() - HISTORICAL_CUTOFF_MS;
+	}
+
+	function lastRunTimestamp(metric: WorkflowMetrics) {
+		const timestamp = metric.lastRunAt ? Date.parse(metric.lastRunAt) : NaN;
+		return Number.isFinite(timestamp) ? timestamp : 0;
+	}
+
 	const workflows = $derived(
 		metrics
 			.map((metric) => {
@@ -42,31 +56,47 @@
 				return {
 					...metric,
 					isPinned: preference?.is_pinned ?? false,
-					environment: preference?.environment ?? inferredEnvironment(metric)
+					environment: preference?.environment ?? inferredEnvironment(metric),
+					isHistorical: isDormantHistorical(metric)
 				};
 			})
 			.sort(
 				(a, b) =>
 					Number(b.isPinned) - Number(a.isPinned) ||
-					Number(b.lastConclusion === 'failure') - Number(a.lastConclusion === 'failure') ||
-					a.workflowName.localeCompare(b.workflowName)
+					(sortMode === 'last-run'
+						? lastRunTimestamp(b) - lastRunTimestamp(a)
+						: a.workflowName.localeCompare(b.workflowName)) ||
+					a.workflowName.localeCompare(b.workflowName) ||
+					a.workflowId - b.workflowId
 			)
 	);
 
 	const envCounts = $derived.by(() => {
 		const counts: Record<EnvFilter, number> = {
-			all: workflows.length,
+			all: 0,
 			production: 0,
 			development: 0,
-			unknown: 0
+			unknown: 0,
+			historical: 0
 		};
-		for (const workflow of workflows) counts[workflow.environment]++;
+		for (const workflow of workflows) {
+			if (workflow.isHistorical) counts.historical++;
+			else {
+				counts.all++;
+				counts[workflow.environment]++;
+			}
+		}
 		return counts;
 	});
 
 	const filteredWorkflows = $derived(
 		workflows.filter((workflow) => {
-			if (envFilter !== 'all' && workflow.environment !== envFilter) return false;
+			if (envFilter === 'historical') {
+				if (!workflow.isHistorical) return false;
+			} else {
+				if (workflow.isHistorical) return false;
+				if (envFilter !== 'all' && workflow.environment !== envFilter) return false;
+			}
 			const term = query.trim().toLowerCase();
 			return (
 				term === '' ||
@@ -82,7 +112,9 @@
 			: [...pinnedWorkflows, ...remainingWorkflows.slice(0, 8)]
 	);
 	const latestFailure = $derived(
-		workflows.find((workflow) => workflow.lastConclusion === 'failure') ?? null
+		workflows
+			.filter((workflow) => !workflow.isHistorical && workflow.lastConclusion === 'failure')
+			.sort((a, b) => lastRunTimestamp(b) - lastRunTimestamp(a))[0] ?? null
 	);
 
 	onMount(async () => {
@@ -161,26 +193,38 @@
 				Search, pin, and triage every workflow in this repository.
 			</p>
 		</div>
-		<label class="relative block w-full sm:w-72">
-			<span class="sr-only">Search workflows</span>
-			<input
-				bind:value={query}
-				type="search"
-				placeholder="Search workflows"
-				class="border-border bg-card text-foreground placeholder:text-muted-foreground focus:ring-ring w-full rounded-md border py-2 pr-3 pl-9 text-sm focus:ring-2 focus:outline-none"
-			/>
-			<svg
-				class="text-muted-foreground pointer-events-none absolute top-2.5 left-3 size-4"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg
-			>
-		</label>
+		<div class="flex w-full gap-2 sm:w-auto">
+			<label>
+				<span class="sr-only">Sort workflows</span>
+				<select
+					bind:value={sortMode}
+					class="border-border bg-card text-foreground focus:ring-ring h-full rounded-md border px-3 text-sm focus:ring-2 focus:outline-none"
+				>
+					<option value="last-run">Last run</option>
+					<option value="name">Name</option>
+				</select>
+			</label>
+			<label class="relative block min-w-0 flex-1 sm:w-72">
+				<span class="sr-only">Search workflows</span>
+				<input
+					bind:value={query}
+					type="search"
+					placeholder="Search workflows"
+					class="border-border bg-card text-foreground placeholder:text-muted-foreground focus:ring-ring w-full rounded-md border py-2 pr-3 pl-9 text-sm focus:ring-2 focus:outline-none"
+				/>
+				<svg
+					class="text-muted-foreground pointer-events-none absolute top-2.5 left-3 size-4"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg
+				>
+			</label>
+		</div>
 	</div>
 
 	<div class="flex flex-wrap gap-1.5" role="group" aria-label="Filter by environment">
-		{#each ['all', 'production', 'development', 'unknown'] as const as filter (filter)}
+		{#each ['all', 'production', 'development', 'unknown', 'historical'] as const as filter (filter)}
 			<button
 				type="button"
 				onclick={() => (envFilter = filter)}
@@ -190,7 +234,9 @@
 					? 'border-primary bg-primary/10 text-primary'
 					: 'border-border text-muted-foreground hover:bg-muted'}"
 			>
-				{filter === 'all' ? 'All' : ENV_LABEL[filter]} ({envCounts[filter]})
+				{filter === 'all' ? 'All' : filter === 'historical' ? 'Historical' : ENV_LABEL[filter]} ({envCounts[
+					filter
+				]})
 			</button>
 		{/each}
 	</div>
@@ -230,7 +276,7 @@
 				? 'No workflows found in this repository.'
 				: query.trim()
 					? `No workflows match “${query}”.`
-					: `No ${envFilter === 'all' ? '' : ENV_LABEL[envFilter as Environment].toLowerCase() + ' '}workflows to show.`}
+					: `No ${envFilter === 'all' ? '' : envFilter === 'historical' ? 'historical ' : ENV_LABEL[envFilter as Environment].toLowerCase() + ' '}workflows to show.`}
 		</div>
 	{:else}
 		<div class="grid grid-cols-1 gap-3 lg:grid-cols-2">

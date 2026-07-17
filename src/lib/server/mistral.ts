@@ -3,7 +3,7 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createMistral } from '@ai-sdk/mistral';
 import { generateText, Output } from 'ai';
 import { z } from 'zod';
-import type { WorkflowMetrics, OptimizationResult, OptimizationItem } from '$lib/types/metrics';
+import type { WorkflowMetrics, OptimizationResult } from '$lib/types/metrics';
 
 export type AIProvider = 'openai' | 'gemini' | 'mistral';
 
@@ -168,46 +168,4 @@ export async function generateOptimizationReport(
 			completionTokens: usage.outputTokens ?? 0
 		}
 	};
-}
-
-export async function generateOptimizedYaml(
-	apiKey: string,
-	workflowName: string,
-	originalYaml: string,
-	selectedOptimizations: OptimizationItem[],
-	provider: AIProvider = 'openai',
-	model?: string | null
-): Promise<string> {
-	const optimizationDescriptions = selectedOptimizations
-		.map((opt, i) => `${i + 1}. **${opt.title}** (${opt.category}): ${opt.explanation}${opt.codeExample ? `\n\nExample:\n\`\`\`yaml\n${opt.codeExample}\n\`\`\`` : ''}`)
-		.join('\n\n');
-
-	const prompt = `You are an expert in GitHub Actions workflow optimization. Apply the following optimizations to the workflow YAML.
-
-## Workflow: ${workflowName}
-
-### Original YAML
-\`\`\`yaml
-${originalYaml}
-\`\`\`
-
-### Optimizations to apply
-
-${optimizationDescriptions}
-
-### Instructions
-
-Return ONLY the complete, updated YAML file with all optimizations applied. Do not include any explanation, markdown fences, or extra text — just the raw YAML content starting with the first line of the workflow file.`;
-
-	const { text } = await generateText({
-		model: createAIModel(provider, apiKey, model),
-		prompt,
-		maxOutputTokens: 4096
-	});
-
-	// Strip any accidental markdown fences if the model wraps the output
-	return text
-		.replace(/^```ya?ml\n?/i, '')
-		.replace(/\n?```\s*$/i, '')
-		.trim();
 }

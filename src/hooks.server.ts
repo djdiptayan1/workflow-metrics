@@ -1,4 +1,5 @@
 import { createSupabaseServerClient } from '$lib/server/supabase';
+import { compressResponse } from '$lib/server/response-compression';
 import type { Handle } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
 
@@ -36,4 +37,28 @@ const authHandle: Handle = async ({ event, resolve }) => {
 	return resolve(event);
 };
 
-export const handle = sequence(supabaseHandle, authHandle);
+const securityHeadersHandle: Handle = async ({ event, resolve }) => {
+	const response = await resolve(event);
+	response.headers.set(
+		'Content-Security-Policy',
+		"default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: https://avatars.githubusercontent.com https://*.githubusercontent.com; connect-src 'self'; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+	);
+	response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+	response.headers.set('X-Content-Type-Options', 'nosniff');
+	response.headers.set('X-Frame-Options', 'DENY');
+	response.headers.set('Permissions-Policy', 'camera=(), geolocation=(), microphone=()');
+	if (event.url.protocol === 'https:') {
+		response.headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+	}
+	return response;
+};
+
+const compressionHandle: Handle = async ({ event, resolve }) =>
+	compressResponse(event.request, await resolve(event));
+
+export const handle = sequence(
+	supabaseHandle,
+	authHandle,
+	securityHeadersHandle,
+	compressionHandle
+);

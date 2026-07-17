@@ -14,7 +14,7 @@ An open-source dashboard for GitHub Actions metrics with AI-powered optimization
 
 ## Features
 
-- **GitHub OAuth login** — Sign in with GitHub using `repo` and `read:org` scopes to access your workflows
+- **Read-only GitHub OAuth login** — Sign in with GitHub using `repo` and `read:org` scopes to read repositories, Actions data, pull requests, and logs; the app does not write to repositories
 - **Repository overview dashboard** — Total runs, success rate, average duration, build minutes, skip rate, and DORA metrics across a selectable Actions history window
 - **DORA metrics** — Deployment Frequency, Lead Time for Changes, Change Failure Rate, and Mean Time to Recovery over the last 30 days
 - **Run history + workflow-change markers** — Visual breakdown of success/failure/cancelled runs plus commit markers when workflow files changed
@@ -32,9 +32,7 @@ An open-source dashboard for GitHub Actions metrics with AI-powered optimization
 - **Workflow file preview** — Inspect workflow YAML from the workflow detail page without leaving the dashboard
 - **Pull request workspace** — Cursor-paginate complete open, closed, and merged PR history; filter the current page by PR number or title; view changed LOC and the latest status of each associated GitHub Action
 - **AI optimization and failure analysis** — Use configured OpenAI, Google Gemini, or Mistral models for streaming workflow suggestions and evidence-based failure explanations
-- **Apply as PR** — Push AI optimization suggestions directly as a pull request via the GitHub App integration
-- **Shared workflow preferences** — Repository admins can make workflow pins and environment labels shared; personal preferences remain user-specific by default
-- **Settings page** — Manage GitHub connections, tracked repositories, AI provider/model, Actions history, dashboard refresh policy, shared preferences, and theme
+- **Settings page** — Manage GitHub connections, tracked repositories, AI provider/model, Actions history, dashboard refresh policy, and theme
 - **Performance-aware caching** — Derived dashboard snapshots are cached with a user-selectable realtime, 5-, 10-, or 15-minute refresh policy; stale snapshots refresh in the background
 - **Dark / light mode** — Dark by default, persisted per user preference
 
@@ -113,14 +111,14 @@ Figma template: [Dark Admin Dashboards](https://www.figma.com/community/file/132
 ## Getting Started
 
 Want to run everything locally (local Supabase, not a hosted project) with full step-by-step
-instructions, including GitHub OAuth App + GitHub App setup and Docker networking notes? See
+instructions, including GitHub OAuth App setup and Docker networking notes? See
 [LOCAL_SETUP.md](LOCAL_SETUP.md).
 
 The instructions below assume a hosted Supabase project instead.
 
 ### Run locally with Docker
 
-1. Copy `.env.example` to `.env` and add the three Supabase values from your project:
+1. Copy `.env.example` to `.env` and add the Supabase values plus the server-only `SECRETS_ENCRYPTION_KEY`:
 
    ```bash
    cp .env.example .env
@@ -162,8 +160,8 @@ pnpm install
      supabase db push
      ```
      Your project ref is in the Supabase dashboard URL: `https://supabase.com/dashboard/project/YOUR_PROJECT_REF`.
-   - **Without CLI:** In **Supabase Dashboard → SQL Editor**, run every file in `supabase/migrations/` in numeric order through `017_dashboard_refresh_interval.sql`.
-3. **Enable GitHub OAuth** (use a GitHub OAuth App, not a GitHub App):
+   - **Without CLI:** In **Supabase Dashboard → SQL Editor**, run every file in `supabase/migrations/` in numeric order. For an existing deployment with plaintext credentials, follow the staged `021` → migration script → `022` sequence in [Local setup: migrate existing credentials](LOCAL_SETUP.md#migrate-existing-credentials) instead of applying `022` immediately.
+3. **Enable GitHub OAuth:**
    - Go to [GitHub → Settings → Developer settings → OAuth Apps → New OAuth App](https://github.com/settings/applications/new).
    - Set **Authorization callback URL** to your Supabase callback: `https://<your-project-ref>.supabase.co/auth/v1/callback`.
    - Copy the **Client ID** and **Client secret**, then in **Supabase → Authentication → Providers → GitHub**, paste them and enable GitHub.
@@ -175,35 +173,9 @@ pnpm install
 4. From **Supabase → Project Settings → API**, copy:
    - **Project URL** → `PUBLIC_SUPABASE_URL`
    - **anon / public** key → `PUBLIC_SUPABASE_ANON_KEY`
-   - **service_role** key → `SUPABASE_SERVICE_ROLE_KEY` _(server-only; used for privileged shared-preference operations — never expose it to the browser or commit it)_
+   - **service_role** key → `SUPABASE_SERVICE_ROLE_KEY` _(server-only; never expose it to the browser or commit it)_
 
-### 3. Create a GitHub App (for "Apply as PR")
-
-The "Apply as PR" feature — which pushes AI optimization suggestions directly as a pull request — requires a GitHub App (separate from the OAuth App used for login).
-
-1. Go to [GitHub → Settings → Developer settings → GitHub Apps → New GitHub App](https://github.com/settings/apps/new).
-2. Fill in the details:
-   - **GitHub App name**: e.g. `workflow-metrics-bot`
-   - **Homepage URL**: your app URL (e.g. `https://metrics.example.com`)
-   - **Callback URL**: `https://metrics.example.com/auth/github-app/callback`
-     - For local dev, also add: `http://localhost:5173/auth/github-app/callback`
-   - **Webhook**: uncheck **Active** (not needed)
-3. Under **Repository permissions**, set:
-   - **Contents**: Read & Write
-   - **Pull requests**: Read & Write
-   - **Workflows**: Read & Write
-   - **Actions**: Read
-4. Click **Create GitHub App**.
-5. On the App settings page, note the **App ID** → `GITHUB_APP_ID`.
-6. Note the **App slug** from the URL (`github.com/apps/<slug>`) → `GITHUB_APP_SLUG`.
-7. Scroll to **Private keys** → **Generate a private key**. A `.pem` file will download.
-   - Collapse the newlines for use as a single-line secret:
-     ```bash
-     awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' your-app.pem
-     ```
-   - Use the output as `GITHUB_APP_PRIVATE_KEY`.
-
-### 4. Configure an AI provider (optional)
+### 3. Configure an AI provider (optional)
 
 AI optimization and failure analysis use a per-user OpenAI, Gemini, or Mistral API key configured in the app Settings page. The key is not a server environment variable.
 
@@ -212,7 +184,7 @@ AI optimization and failure analysis use a per-user OpenAI, Gemini, or Mistral A
 
 The key is stored encrypted in Supabase and is only used server-side. AI features are unavailable without one; the rest of the app works normally.
 
-### 5. Configure environment variables
+### 4. Configure environment variables
 
 Copy `.env.example` to `.env`:
 
@@ -234,10 +206,9 @@ REDIS_URL=redis://localhost:6379
 # Leave commented out for local dev — the app uses the request origin automatically.
 # PUBLIC_APP_URL=https://metrics.example.com
 
-# ── GitHub App (for "Apply as PR") ───────────────────────────────────────────
-GITHUB_APP_ID=your-numeric-app-id
-GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
-GITHUB_APP_SLUG=your-github-app-slug
+# ── Credential encryption (server-only) ───────────────────────────────────────
+# Generate with: node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+SECRETS_ENCRYPTION_KEY=your-base64url-encoded-32-byte-key
 ```
 
 | Variable                    | Required          | Description                                                                                             |
@@ -249,11 +220,9 @@ GITHUB_APP_SLUG=your-github-app-slug
 | `REDIS_URL`                 | Yes               | Redis connection URL. Use `rediss://` with TLS for a managed production Redis service                   |
 | `PUBLIC_APP_URL`            | Production only   | Your deployed app URL (e.g. `https://metrics.example.com`), no trailing slash                           |
 | `ORIGIN`                    | Production only   | Public adapter-node origin, normally the same value as `PUBLIC_APP_URL`                                 |
-| `GITHUB_APP_ID`             | Yes               | Numeric App ID from GitHub App settings                                                                 |
-| `GITHUB_APP_PRIVATE_KEY`    | Yes               | RSA private key from GitHub App settings (full PEM, newlines as `\n`)                                   |
-| `GITHUB_APP_SLUG`           | Yes               | URL slug of your GitHub App (e.g. `workflow-metrics-bot`)                                               |
+| `SECRETS_ENCRYPTION_KEY`    | Yes               | Base64url-encoded 32-byte key for credential encryption; server-only and never committed or exposed    |
 
-### 5.1 App-wide developer config
+### 4.1 App-wide developer config
 
 The app also supports a typed server-side config file for developer customization.
 
@@ -280,7 +249,7 @@ const localConfig: AppConfigOverride = {
 export default localConfig;
 ```
 
-### 6. Run locally
+### 5. Run locally
 
 ```bash
 pnpm dev
@@ -295,7 +264,7 @@ to pull `djdiptayan/workflow-metrics:latest`; if it is unavailable, Compose buil
 
 ```bash
 cp .env.example .env
-# Edit .env with your Supabase, app URL, and GitHub App values.
+# Edit .env with your Supabase values, server-only SECRETS_ENCRYPTION_KEY, and app URL.
 docker compose up -d
 docker compose ps
 ```
@@ -349,15 +318,15 @@ See `supabase/migrations/001_initial.sql` for the full schema with RLS policies.
 
 Tables:
 
-- `github_connections` — GitHub OAuth tokens per user
+- `github_connections` — GitHub OAuth connection metadata per user
+- `private.user_secrets` — Server-side encrypted GitHub OAuth tokens and AI provider keys
 - `repositories` — Tracked repositories per user
-- `user_settings` — Encrypted AI key/provider/model, theme, Actions history, dashboard refresh policy, and default repo
+- `user_settings` — AI provider/model, theme, Actions history, dashboard refresh policy, and default repo
 - `workflow_runs_cache` — Historical unused cache table retained for migration compatibility
 - `workflow_detail_runs_cache` — Historical unused cache table retained for migration compatibility
 - `optimization_history` — History of AI optimization suggestions per workflow
-- `github_app_installations` — GitHub App installation records per repository
 - `dora_workflows` — User-selected workflows used for DORA calculations
-- `repository_workflow_settings` — Per-repository personal/shared workflow preference mode
+
 - `workflow_preferences` — Pinned workflow and environment classification preferences
 
 ## Related Projects

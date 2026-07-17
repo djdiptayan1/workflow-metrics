@@ -84,7 +84,7 @@
 
 			<!-- Bar chart -->
 			<div
-				class="flex w-full items-end gap-0.5"
+				class="flex w-full items-end"
 				style="height: {CHART_HEIGHT}px;"
 				role="img"
 				aria-label={title}

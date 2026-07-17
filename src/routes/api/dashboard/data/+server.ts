@@ -5,6 +5,7 @@ import {
 	fetchIncrementalWorkflowRunsForRepo,
 	isGitHubUnauthorizedError
 } from '$lib/server/github';
+import { getGitHubAccessToken } from '$lib/server/secrets';
 import {
 	acquireSyncLock,
 	getDashboardSnapshot,
@@ -106,12 +107,8 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 	const lookback = parseLookback(url.searchParams.get('days'));
 	const days = lookback === 'all' ? null : Number(lookback);
 
-	const [{ data: connection }, { data: repository }, { data: settings }] = await Promise.all([
-		locals.supabase
-			.from('github_connections')
-			.select('access_token')
-			.eq('user_id', user.id)
-			.single(),
+	const [githubAccessToken, { data: repository }, { data: settings }] = await Promise.all([
+		getGitHubAccessToken(user.id),
 		locals.supabase
 			.from('repositories')
 			.select('id')
@@ -125,7 +122,7 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 			.eq('user_id', user.id)
 			.single()
 	]);
-	if (!connection) throw error(401, 'GitHub connection not found');
+	if (!githubAccessToken) throw error(401, 'GitHub connection not found');
 	if (!repository) throw error(403, 'Repository not found or access denied');
 
 	const { data: doraWorkflows } = await locals.supabase
@@ -159,7 +156,7 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 		lookback,
 		days,
 		doraWorkflowIds,
-		octokit: createOctokit(connection.access_token)
+		octokit: createOctokit(githubAccessToken)
 	};
 	const respond = (data: DashboardData, cache: 'fresh' | 'stale' | 'miss', sync: SyncMode) =>
 		json(data, {

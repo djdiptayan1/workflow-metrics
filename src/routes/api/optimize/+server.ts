@@ -1,5 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { generateOptimizationReport, AI_PROVIDER_LABELS, type AIProvider } from '$lib/server/mistral';
+import { getAiApiKey, getGitHubAccessToken } from '$lib/server/secrets';
 import { Octokit } from '@octokit/rest';
 import type { RequestHandler } from './$types';
 import type { WorkflowMetrics } from '$lib/types/metrics';
@@ -84,13 +85,16 @@ export const POST: RequestHandler = async ({ request, url, locals }) => {
 			}
 
 			// Validate settings
-			const { data: settings } = await supabase
-				.from('user_settings')
-				.select('ai_provider, ai_api_key, ai_model')
-				.eq('user_id', user.id)
-				.single();
+			const [{ data: settings }, aiApiKey] = await Promise.all([
+				supabase
+					.from('user_settings')
+					.select('ai_provider, ai_model')
+					.eq('user_id', user.id)
+					.single(),
+				getAiApiKey(user.id)
+			]);
 
-			if (!settings?.ai_api_key) {
+			if (!aiApiKey) {
 				send({ event: 'error', data: { message: 'AI API key not configured. Add it in Settings.' } });
 				return;
 			}
@@ -98,20 +102,16 @@ export const POST: RequestHandler = async ({ request, url, locals }) => {
 			// ── Phase 2: Fetch workflow YAML from GitHub ──────────────────────────
 			send({ event: 'phase', data: { step: 'fetching-yaml', message: 'Fetching workflow YAML from GitHub…' } });
 
-			const { data: connection } = await supabase
-				.from('github_connections')
-				.select('access_token')
-				.eq('user_id', user.id)
-				.single();
+			const githubAccessToken = await getGitHubAccessToken(user.id);
 
-			if (!connection) {
+			if (!githubAccessToken) {
 				send({ event: 'error', data: { message: 'GitHub connection not found' } });
 				return;
 			}
 
 			let workflowYaml = '';
 			try {
-				const octokit = new Octokit({ auth: connection.access_token });
+				const octokit = new Octokit({ auth: githubAccessToken });
 				const { data: fileContent } = await octokit.rest.repos.getContent({
 					owner,
 					repo,
@@ -127,16 +127,16 @@ export const POST: RequestHandler = async ({ request, url, locals }) => {
 
 			// ── Phase 3: AI analysis ──────────────────────────────────────────────
 			// The client will cycle through category-specific messages during this phase.
-			const provider = (settings.ai_provider ?? 'openai') as AIProvider;
+			const provider = (settings?.ai_provider ?? 'openai') as AIProvider;
 			send({ event: 'phase', data: { step: 'ai-analyzing', message: `Analyzing your workflow with ${AI_PROVIDER_LABELS[provider]}…` } });
 
 			const { result, usage } = await generateOptimizationReport(
-				settings.ai_api_key,
+				aiApiKey,
 				workflowName,
 				workflowYaml,
 				metrics,
 				provider,
-				settings.ai_model
+				settings?.ai_model
 			);
 
 			// ── Phase 4: Save ─────────────────────────────────────────────────────
@@ -169,9 +169,9 @@ export const POST: RequestHandler = async ({ request, url, locals }) => {
 					completionTokens: usage.completionTokens
 				}
 			});
-		} catch (e: unknown) {
-			const msg = e instanceof Error ? e.message : 'Optimization failed';
-			send({ event: 'error', data: { message: msg } });
+		} catch (cause: unknown) {
+			console.error('[api/optimize] Optimization failed', cause);
+			send({ event: 'error', data: { message: 'Optimization failed' } });
 		} finally {
 			writer.close().catch(() => {});
 		}

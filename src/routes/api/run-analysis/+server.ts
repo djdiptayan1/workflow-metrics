@@ -3,6 +3,7 @@ import { generateText } from 'ai';
 import type { RequestHandler } from './$types';
 import { createAIModel, type AIProvider } from '$lib/server/mistral';
 import { createOctokit, fetchJobFailureExcerpt, fetchJobsForRun } from '$lib/server/github';
+import { getAiApiKey, getGitHubAccessToken } from '$lib/server/secrets';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	const { user } = await locals.safeGetSession();
@@ -14,15 +15,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	} | null;
 	if (!body?.owner || !body.repo || !Number.isSafeInteger(body.runId))
 		throw error(400, 'Invalid run request');
-	const [connectionResult, settingsResult, trackedResult] = await Promise.all([
-		locals.supabase
-			.from('github_connections')
-			.select('access_token')
-			.eq('user_id', user.id)
-			.single(),
+	const [githubAccessToken, aiApiKey, settingsResult, trackedResult] = await Promise.all([
+		getGitHubAccessToken(user.id),
+		getAiApiKey(user.id),
 		locals.supabase
 			.from('user_settings')
-			.select('ai_provider,ai_api_key,ai_model')
+			.select('ai_provider,ai_model')
 			.eq('user_id', user.id)
 			.single(),
 		locals.supabase
@@ -33,11 +31,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			.eq('name', body.repo)
 			.maybeSingle()
 	]);
-	if (!connectionResult.data || !trackedResult.data)
+	if (!githubAccessToken || !trackedResult.data)
 		throw error(403, 'Repository not found or access denied');
-	if (!settingsResult.data?.ai_api_key)
+	if (!aiApiKey)
 		throw error(400, 'AI API key not configured. Add it in Settings.');
-	const octokit = createOctokit(connectionResult.data.access_token);
+	const octokit = createOctokit(githubAccessToken);
 	const [runResult, jobs] = await Promise.all([
 		octokit.rest.actions.getWorkflowRun({
 			owner: body.owner,
@@ -49,7 +47,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const failedJob = jobs.find((job) => job.conclusion === 'failure');
 	if (!failedJob) throw error(404, 'No failed job found for this run');
 	const [excerpt, commitResult, pullRequestsResult] = await Promise.all([
-		fetchJobFailureExcerpt(connectionResult.data.access_token, body.owner, body.repo, failedJob.id),
+		fetchJobFailureExcerpt(githubAccessToken, body.owner, body.repo, failedJob.id),
 		octokit.rest.repos
 			.getCommit({ owner: body.owner, repo: body.repo, ref: runResult.data.head_sha })
 			.catch(() => null),
@@ -65,9 +63,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const pullRequest = pullRequestsResult?.data[0];
 	const { text } = await generateText({
 		model: createAIModel(
-			(settingsResult.data.ai_provider ?? 'openai') as AIProvider,
-			settingsResult.data.ai_api_key,
-			settingsResult.data.ai_model
+			(settingsResult.data?.ai_provider ?? 'openai') as AIProvider,
+			aiApiKey,
+			settingsResult.data?.ai_model
 		),
 		system:
 			'You are a senior GitHub Actions incident analyst. Explain only evidence supported by the supplied metadata and log. Separate confirmed cause from hypotheses. Give concise remediation steps.',

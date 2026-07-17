@@ -1,4 +1,5 @@
 import { redirect } from '@sveltejs/kit';
+import { storeGitHubAccessToken } from '$lib/server/secrets';
 import type { RequestHandler } from './$types';
 
 /** Allow only same-origin paths (no protocol-relative or external URLs). */
@@ -16,8 +17,7 @@ export const GET: RequestHandler = async ({ url, locals, cookies }) => {
 	const errorDesc = url.searchParams.get('error_description') ?? url.searchParams.get('error');
 
 	if (!code) {
-		// GitHub may send error params; forward them. No code usually means wrong app type
-		// (GitHub App instead of OAuth App) or wrong callback URL in the OAuth App.
+		// GitHub may send error parameters when OAuth is denied or misconfigured.
 		const message =
 			errorDesc != null
 				? decodeURIComponent(String(errorDesc))
@@ -36,7 +36,6 @@ export const GET: RequestHandler = async ({ url, locals, cookies }) => {
 		throw redirect(303, `/auth/login?error=${encodeURIComponent(msg)}`);
 	}
 
-	// Store the GitHub access token in our github_connections table.
 	// With PKCE flow, session.provider_token may be null — fall back to user metadata.
 	const providerToken = session.provider_token;
 	const githubIdentity = user.identities?.find((i) => i.provider === 'github');
@@ -53,7 +52,6 @@ export const GET: RequestHandler = async ({ url, locals, cookies }) => {
 					github_user_id: Number(githubUserId),
 					github_username: githubUsername,
 					avatar_url: avatarUrl ?? null,
-					access_token: providerToken,
 					updated_at: new Date().toISOString()
 				},
 				{ onConflict: 'user_id,github_user_id' }
@@ -61,6 +59,7 @@ export const GET: RequestHandler = async ({ url, locals, cookies }) => {
 			if (upsertError) {
 				console.error('Failed to upsert GitHub connection:', upsertError);
 			}
+			await storeGitHubAccessToken(user.id, providerToken);
 		} catch (e) {
 			console.error('Failed to store GitHub connection:', e);
 		}

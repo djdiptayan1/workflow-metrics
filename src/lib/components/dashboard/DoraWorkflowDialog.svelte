@@ -16,6 +16,17 @@
 	let localSelection = $derived([...selectedIds]);
 	let saving = $state(false);
 	let error = $state<string | null>(null);
+	let query = $state('');
+	const filteredWorkflows = $derived(
+		workflows.filter((workflow) => {
+			if (workflow.workflowPath.startsWith('historical/')) return false;
+			const term = query.trim().toLowerCase();
+			return (
+				term === '' ||
+				`${workflow.workflowName} ${workflow.workflowPath}`.toLowerCase().includes(term)
+			);
+		})
+	);
 
 	function isSelected(workflowId: number) {
 		return localSelection.includes(workflowId);
@@ -61,17 +72,35 @@
 					workflows.
 				</Dialog.Description>
 			</div>
+			<label class="relative mb-4 block">
+				<span class="sr-only">Search workflows</span>
+				<input
+					bind:value={query}
+					type="search"
+					placeholder="Search workflows"
+					class="border-border bg-background text-foreground placeholder:text-muted-foreground focus:ring-ring w-full rounded-md border py-2 pr-3 pl-9 text-sm focus:ring-2 focus:outline-none"
+				/>
+				<svg
+					class="text-muted-foreground pointer-events-none absolute top-2.5 left-3 size-4"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg
+				>
+			</label>
 
 			<!-- Workflow List -->
 			<div
 				class="border-border bg-background mb-4 max-h-96 space-y-2 overflow-y-auto rounded-md border p-4"
 			>
-				{#if workflows.length === 0}
+				{#if filteredWorkflows.length === 0}
 					<p class="text-muted-foreground py-4 text-center text-sm">
-						No workflows found for this repository.
+						{query.trim()
+							? `No workflows match “${query.trim()}”.`
+							: 'No workflows found for this repository.'}
 					</p>
 				{:else}
-					{#each workflows as workflow (workflow.workflowId)}
+					{#each filteredWorkflows as workflow (workflow.workflowId)}
 						<label
 							class="hover:bg-accent flex cursor-pointer items-start gap-3 rounded-md p-3 transition-colors"
 						>

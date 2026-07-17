@@ -46,7 +46,7 @@ The CI pipeline will run lint, tests, and a build check on your PR. All checks m
 - Node.js >= 24
 - PNPM >= 10
 - A [Supabase](https://supabase.com/) project (for auth and database)
-- A GitHub OAuth App (for GitHub login)
+- A GitHub OAuth App (for read-only GitHub login and repository data access)
 
 ## Setup
 
@@ -62,14 +62,24 @@ cp .env.example .env
 
 Required environment variables:
 
-| Variable                   | Description                                    |
-| -------------------------- | ---------------------------------------------- |
-| `PUBLIC_SUPABASE_URL`      | Your Supabase project URL                      |
-| `PUBLIC_SUPABASE_ANON_KEY` | Your Supabase anon key                         |
-| `REDIS_URL`                | Required Redis connection URL                  |
-| `GITHUB_APP_ID`            | GitHub App ID (for server-side API calls)      |
-| `GITHUB_APP_PRIVATE_KEY`   | GitHub App private key                         |
-| `MISTRAL_API_KEY`          | Mistral API key (for AI optimization features) |
+| Variable                    | Description                                                                 |
+| --------------------------- | --------------------------------------------------------------------------- |
+| `PUBLIC_SUPABASE_URL`       | Your Supabase project URL                                                   |
+| `PUBLIC_SUPABASE_ANON_KEY`  | Your Supabase publishable (or legacy anon) key                              |
+| `SUPABASE_SERVICE_ROLE_KEY` | Your Supabase secret (or legacy service-role) key; server-only              |
+| `REDIS_URL`                 | Required Redis connection URL                                               |
+| `SECRETS_ENCRYPTION_KEY`    | Base64url-encoded 32-byte credential-encryption key; server-only            |
+
+Generate `SECRETS_ENCRYPTION_KEY` with Node's built-in crypto module, and keep the output only in
+server-side secret storage:
+
+```bash
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+```
+
+Do not change or lose this key after credentials have been stored; it is required to decrypt them.
+For the required `021` → script dry run → script → `022` migration sequence and hosted-database
+caution, see [LOCAL_SETUP.md](LOCAL_SETUP.md#migrate-existing-credentials).
 
 ## Development
 

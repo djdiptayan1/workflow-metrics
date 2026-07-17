@@ -10,7 +10,6 @@ export interface Database {
 					github_user_id: number;
 					github_username: string;
 					avatar_url: string | null;
-					access_token: string;
 					scopes: string[] | null;
 					created_at: string;
 					updated_at: string;
@@ -21,7 +20,6 @@ export interface Database {
 					github_user_id: number;
 					github_username: string;
 					avatar_url?: string | null;
-					access_token: string;
 					scopes?: string[] | null;
 					created_at?: string;
 					updated_at?: string;
@@ -32,7 +30,6 @@ export interface Database {
 					github_user_id?: number;
 					github_username?: string;
 					avatar_url?: string | null;
-					access_token?: string;
 					scopes?: string[] | null;
 					updated_at?: string;
 				};
@@ -73,9 +70,7 @@ export interface Database {
 				Row: {
 					id: string;
 					user_id: string;
-					mistral_api_key: string | null;
 					ai_provider: 'openai' | 'gemini' | 'mistral';
-					ai_api_key: string | null;
 					ai_model: string | null;
 					theme: 'dark' | 'light' | 'system';
 					default_repo_id: string | null;
@@ -87,9 +82,7 @@ export interface Database {
 				Insert: {
 					id?: string;
 					user_id: string;
-					mistral_api_key?: string | null;
 					ai_provider?: 'openai' | 'gemini' | 'mistral';
-					ai_api_key?: string | null;
 					ai_model?: string | null;
 					theme?: 'dark' | 'light' | 'system';
 					default_repo_id?: string | null;
@@ -99,9 +92,7 @@ export interface Database {
 					updated_at?: string;
 				};
 				Update: {
-					mistral_api_key?: string | null;
 					ai_provider?: 'openai' | 'gemini' | 'mistral';
-					ai_api_key?: string | null;
 					ai_model?: string | null;
 					theme?: 'dark' | 'light' | 'system';
 					default_repo_id?: string | null;
@@ -136,12 +127,7 @@ export interface Database {
 				};
 				Relationships: [];
 			};
-			repository_workflow_settings: {
-				Row: { github_repo_id: number; preferences_mode: 'personal' | 'shared'; updated_by: string | null; updated_at: string };
-				Insert: { github_repo_id: number; preferences_mode?: 'personal' | 'shared'; updated_by?: string | null; updated_at?: string };
-				Update: { preferences_mode?: 'personal' | 'shared'; updated_by?: string | null; updated_at?: string };
-				Relationships: [];
-			};
+
 			workflow_preferences: {
 				Row: { id: string; github_repo_id: number; user_id: string | null; workflow_id: number; is_pinned: boolean; environment: 'production' | 'development' | 'unknown'; updated_by: string | null; updated_at: string };
 				Insert: { id?: string; github_repo_id: number; user_id?: string | null; workflow_id: number; is_pinned?: boolean; environment?: 'production' | 'development' | 'unknown'; updated_by?: string | null; updated_at?: string };
@@ -150,7 +136,28 @@ export interface Database {
 			};
 		};
 		Views: Record<string, never>;
-		Functions: Record<string, never>;
+		Functions: {
+			get_user_secret_ciphertexts: {
+				Args: { p_user_id: string };
+				Returns: Array<{
+					github_access_token_ciphertext: string | null;
+					ai_api_key_ciphertext: string | null;
+					encryption_version: number;
+				}>;
+			};
+			upsert_user_secret_ciphertexts: {
+				Args: {
+					p_user_id: string;
+					p_github_access_token_ciphertext?: string | null;
+					p_ai_api_key_ciphertext?: string | null;
+				};
+				Returns: undefined;
+			};
+			clear_user_ai_api_key_ciphertext: {
+				Args: { p_user_id: string };
+				Returns: undefined;
+			};
+		};
 		Enums: Record<string, never>;
 		CompositeTypes: Record<string, never>;
 	};

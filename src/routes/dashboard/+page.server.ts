@@ -13,7 +13,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const [{ data: connection }, { data: repos }, { data: settings }] = await Promise.all([
 		locals.supabase
 			.from('github_connections')
-			.select('access_token, github_username')
+			.select('github_username')
 			.eq('user_id', user.id)
 			.single(),
 		locals.supabase
