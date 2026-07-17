@@ -18,7 +18,8 @@ import type {
 	StepBreakdown,
 	RunnerType,
 	WorkflowJobNode,
-	WorkflowJobEdge
+	WorkflowJobEdge,
+	AverageDurationWindow
 } from '$lib/types/metrics';
 import { buildJobGraphFromWorkflow } from '$lib/server/workflow-graph';
 import {
@@ -714,9 +715,35 @@ export async function fetchWorkflowFileCommits(
 	return out;
 }
 
+const AVERAGE_DURATION_RUN_LIMIT = 150;
+const AVERAGE_DURATION_DAYS = 14;
+
+function runsForAverage(
+	runs: GitHubWorkflowRun[],
+	window: AverageDurationWindow
+): GitHubWorkflowRun[] {
+	const completed = runs.filter((run) => run.status === 'completed');
+	if (window === 'recent_14_days') {
+		const cutoff = Date.now() - AVERAGE_DURATION_DAYS * 86_400_000;
+		return completed.filter((run) => {
+			const startedAt = getRunTiming(run).startedAt ?? run.created_at;
+			return Date.parse(startedAt) >= cutoff;
+		});
+	}
+
+	return [...completed]
+		.sort((a, b) => {
+			const aStartedAt = getRunTiming(a).startedAt ?? a.created_at;
+			const bStartedAt = getRunTiming(b).startedAt ?? b.created_at;
+			return Date.parse(bStartedAt) - Date.parse(aStartedAt);
+		})
+		.slice(0, AVERAGE_DURATION_RUN_LIMIT);
+}
+
 function computeWorkflowMetrics(
 	workflow: GitHubWorkflow,
-	runs: GitHubWorkflowRun[]
+	runs: GitHubWorkflowRun[],
+	averageDurationWindow: AverageDurationWindow
 ): WorkflowMetrics {
 	const workflowRuns = runs.filter((r) => r.workflow_id === workflow.id);
 	const completed = workflowRuns.filter((r) => r.status === 'completed');
@@ -734,7 +761,10 @@ function computeWorkflowMetrics(
 	const skipRate =
 		workflowRuns.length > 0 ? Math.round((skippedCount / workflowRuns.length) * 1000) / 10 : 0;
 
-	const durations = completed
+	const durations = runsForAverage(workflowRuns, averageDurationWindow)
+		.map((r) => getRunTiming(r).durationMs)
+		.filter((d): d is number => d !== null);
+	const allDurations = completed
 		.map((r) => getRunTiming(r).durationMs)
 		.filter((d): d is number => d !== null)
 		.sort((a, b) => a - b);
@@ -742,7 +772,6 @@ function computeWorkflowMetrics(
 	const avgDurationMs =
 		durations.length > 0 ? durations.reduce((a, b) => a + b, 0) / durations.length : 0;
 
-	const sortedAsc = [...durations].sort((a, b) => a - b);
 	const lastRun = workflowRuns[0];
 
 	return {
@@ -758,8 +787,8 @@ function computeWorkflowMetrics(
 		failureRate,
 		skipRate,
 		avgDurationMs: Math.round(avgDurationMs),
-		p50DurationMs: Math.round(percentile(sortedAsc, 50)),
-		p95DurationMs: Math.round(percentile(sortedAsc, 95)),
+		p50DurationMs: Math.round(percentile(allDurations, 50)),
+		p95DurationMs: Math.round(percentile(allDurations, 95)),
 		lastRunAt: lastRun
 			? (getRunTiming(lastRun).completedAt ?? getRunTiming(lastRun).startedAt)
 			: null,
@@ -1290,6 +1319,8 @@ export interface BuildDashboardDataOptions {
 	doraWorkflowIds?: number[];
 	/** Authenticated cache namespace for workflow-file contents. */
 	cacheUserId?: string;
+	/** Bounded run window used only for average-duration metrics. */
+	averageDurationWindow?: AverageDurationWindow;
 }
 
 export async function buildDashboardData(
@@ -1306,7 +1337,8 @@ export async function buildDashboardData(
 		onRepairProgress,
 		onComputeStart,
 		doraWorkflowIds,
-		cacheUserId
+		cacheUserId,
+		averageDurationWindow = 'recent_150'
 	} = options ?? {};
 	const days = options?.days === undefined ? 30 : options.days;
 	const isAllTime = days === null;
@@ -1391,7 +1423,9 @@ export async function buildDashboardData(
 
 	onComputeStart?.();
 	const computeStart = now();
-	const workflowMetrics = workflows.map((w) => computeWorkflowMetrics(w, runs));
+	const workflowMetrics = workflows.map((w) =>
+		computeWorkflowMetrics(w, runs, averageDurationWindow)
+	);
 	timing('compute: workflowMetrics', now() - computeStart, { workflows: workflows.length });
 
 	const trendStart = now();
@@ -1423,7 +1457,7 @@ export async function buildDashboardData(
 	const skipRate =
 		completedRuns.length > 0 ? Math.round((totalSkipped / completedRuns.length) * 1000) / 10 : 0;
 
-	const durations = completedRuns
+	const durations = runsForAverage(runs, averageDurationWindow)
 		.map((r) => getRunTiming(r).durationMs)
 		.filter((d): d is number => d !== null);
 	const avgDurationMs =
@@ -1439,6 +1473,7 @@ export async function buildDashboardData(
 		totalSkipped,
 		skipRate,
 		avgDurationMs: Math.round(avgDurationMs),
+		averageDurationWindow,
 		activeWorkflows: workflows.filter((w) => w.state === 'active').length,
 		runTrend,
 		workflowMetrics,
@@ -1464,6 +1499,8 @@ export interface BuildWorkflowDetailDataOptions {
 	onRepairProgress?: (completed: number, total: number) => void;
 	/** Authenticated cache namespace for workflow-file contents. */
 	cacheUserId?: string;
+	/** Bounded run window used only for the workflow's average duration. */
+	averageDurationWindow?: AverageDurationWindow;
 }
 
 export async function buildWorkflowDetailData(
@@ -1473,7 +1510,14 @@ export async function buildWorkflowDetailData(
 	workflowId: number,
 	options?: BuildWorkflowDetailDataOptions
 ): Promise<WorkflowDetailData> {
-	const { cachedRuns, onRunsFetched, onRepairProgress, cacheUserId, days } = options ?? {};
+	const {
+		cachedRuns,
+		onRunsFetched,
+		onRepairProgress,
+		cacheUserId,
+		days,
+		averageDurationWindow = 'recent_150'
+	} = options ?? {};
 	const created = days
 		? `>=${new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}`
 		: undefined;
@@ -1570,7 +1614,7 @@ export async function buildWorkflowDetailData(
 		})
 	);
 
-	const metrics = computeWorkflowMetrics(workflow, runs);
+	const metrics = computeWorkflowMetrics(workflow, runs, averageDurationWindow);
 
 	const minutesMetrics = computeMinutesDetail(runs, jobsPerRun, jobBreakdown);
 

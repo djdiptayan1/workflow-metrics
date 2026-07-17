@@ -172,8 +172,8 @@ Open **Authentication → URL Configuration**.
 
 For a localhost installation:
 
-- **Site URL:** `http://localhost:5173`
-- **Redirect URL:** `http://localhost:5173/auth/callback`
+- **Site URL:** `http://localhost:3000`
+- **Redirect URL:** `http://localhost:3000/auth/callback`
 
 For a production installation at `https://metrics.example.com`:
 
@@ -193,7 +193,7 @@ This is the application's only GitHub integration and is used for read-only acce
 3. Open [GitHub's New OAuth App page](https://github.com/settings/applications/new).
 4. Enter:
    - **Application name:** a recognizable name such as `Workflow Metrics`.
-   - **Homepage URL:** `http://localhost:5173` locally, or the public HTTPS application URL.
+   - **Homepage URL:** `http://localhost:3000` locally, or the public HTTPS application URL.
    - **Authorization callback URL:** the Supabase callback URL copied in step 2.
    - **Enable Device Flow:** off.
 5. Register the application.
@@ -252,7 +252,7 @@ hosted Supabase project.
 1. Open [GitHub's New OAuth App page](https://github.com/settings/applications/new).
 2. Enter:
    - **Application name:** `Workflow Metrics Local` or another unique name.
-   - **Homepage URL:** `http://localhost:5173`.
+   - **Homepage URL:** `http://localhost:3000`.
    - **Authorization callback URL:** `http://127.0.0.1:54321/auth/v1/callback`.
    - **Enable Device Flow:** off.
 3. Register the application.
@@ -405,7 +405,7 @@ Expected state: both `ci-observe` and `redis` show `healthy`.
 Check the application health endpoint:
 
 ```bash
-curl --fail http://localhost:5173/api/health
+curl --fail http://localhost:3000/api/health
 ```
 
 Expected response:
@@ -414,7 +414,7 @@ Expected response:
 { "status": "ok" }
 ```
 
-Open [http://localhost:5173](http://localhost:5173), click **Sign in with GitHub**, authorize the
+Open [http://localhost:3000](http://localhost:3000), click **Sign in with GitHub**, authorize the
 requested `repo` and `read:org` scopes, then select repositories during onboarding.
 
 ### View logs
@@ -489,6 +489,9 @@ Keep `REDIS_URL=redis://127.0.0.1:6379` in the root `.env`, then run:
 pnpm dev
 ```
 
+Vite serves source development at `http://localhost:5173`. Add
+`http://localhost:5173/auth/callback` to the Supabase redirect allow list when using this mode.
+
 For a local application image built from the checkout:
 
 ```bash
@@ -549,7 +552,7 @@ docker compose up -d --no-build --force-recreate ci-observe
 ## 9. Verification checklist
 
 1. `docker compose ps` reports both services healthy.
-2. `curl --fail http://localhost:5173/api/health` returns `{"status":"ok"}`.
+2. `curl --fail http://localhost:3000/api/health` returns `{"status":"ok"}`.
 3. GitHub login returns to `/auth/callback`, then onboarding or the dashboard.
 4. A new row appears in Supabase `github_connections` after first login.
 5. Onboarding lists repositories the GitHub user can access.
@@ -570,7 +573,7 @@ Check all three URL layers:
 1. GitHub OAuth App callback is the Supabase Auth callback, not the Workflow Metrics callback.
 2. Supabase GitHub provider contains the same OAuth Client ID and Client secret.
 3. Supabase Auth redirect allow list contains the exact Workflow Metrics callback:
-   `http://localhost:5173/auth/callback` or `https://your-domain/auth/callback`.
+   `http://localhost:3000/auth/callback` or `https://your-domain/auth/callback`.
 
 Then inspect:
 
@@ -603,7 +606,7 @@ Also confirm `supabase status` reports the local stack running.
 
 - Hosted Supabase callback: `https://<project-ref>.supabase.co/auth/v1/callback`
 - This repository's local Supabase callback: `http://127.0.0.1:54321/auth/v1/callback`
-- Workflow Metrics callback allowed by Supabase: `http://localhost:5173/auth/callback`
+- Workflow Metrics callback allowed by Supabase: `http://localhost:3000/auth/callback`
 
 These URLs serve different hops and are not interchangeable.
 

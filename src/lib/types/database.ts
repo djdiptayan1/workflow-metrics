@@ -75,6 +75,7 @@ export interface Database {
 					theme: 'dark' | 'light' | 'system';
 					default_repo_id: string | null;
 					actions_lookback: '7' | '30' | '90' | 'all';
+					average_duration_window: 'recent_150' | 'recent_14_days';
 					dashboard_refresh_interval: 'realtime' | '5' | '10' | '15';
 					created_at: string;
 					updated_at: string;
@@ -87,6 +88,7 @@ export interface Database {
 					theme?: 'dark' | 'light' | 'system';
 					default_repo_id?: string | null;
 					actions_lookback?: '7' | '30' | '90' | 'all';
+					average_duration_window?: 'recent_150' | 'recent_14_days';
 					dashboard_refresh_interval?: 'realtime' | '5' | '10' | '15';
 					created_at?: string;
 					updated_at?: string;
@@ -97,6 +99,7 @@ export interface Database {
 					theme?: 'dark' | 'light' | 'system';
 					default_repo_id?: string | null;
 					actions_lookback?: '7' | '30' | '90' | 'all';
+					average_duration_window?: 'recent_150' | 'recent_14_days';
 					dashboard_refresh_interval?: 'realtime' | '5' | '10' | '15';
 					updated_at?: string;
 				};

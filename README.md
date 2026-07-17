@@ -131,10 +131,10 @@ The instructions below assume a hosted Supabase project instead.
    docker compose ps
    ```
 
-3. Open http://localhost:5173.
+3. Open http://localhost:3000.
 
 The database migrations in `supabase/migrations/` must be applied to the connected Supabase project
-before signing in. Configure GitHub OAuth with `http://localhost:5173/auth/callback` as its local
+before signing in. Configure GitHub OAuth with `http://localhost:3000/auth/callback` as its local
 redirect URL.
 
 ### Prerequisites
@@ -292,8 +292,8 @@ docker buildx build \
 Production deployments should prefer an immutable version tag through `CI_OBSERVE_IMAGE`, followed
 by `docker compose pull ci-observe` and `docker compose up -d --no-build`.
 
-The app runs the built Node server on container port 3000 and is mapped to
-`http://localhost:5173`. Redis is reachable only on the internal Compose network, persists its
+The app runs the built Node server at `http://localhost:3000`. Redis is reachable only on the
+internal Compose network, persists its
 cache in `redis_data`, and is bounded to 512 MB. The app waits for Redis health before starting.
 The application runs as the unprivileged `node` user; the runtime image contains production
 dependencies only. `docker compose down` preserves the Redis volume. Use `docker compose down -v`
@@ -307,6 +307,7 @@ Redis to the public internet. Set `PUBLIC_APP_URL` to the public application URL
 In **Supabase → Authentication → URL Configuration → Redirect URLs**, ensure all URLs are listed:
 
 ```
+http://localhost:3000/auth/callback
 http://localhost:5173/auth/callback
 https://metrics.example.com/auth/callback
 https://your-custom-domain.com/auth/callback   ← if using a custom domain

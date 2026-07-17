@@ -1,25 +1,42 @@
 # syntax=docker/dockerfile:1
-FROM node:24-bookworm-slim AS build
 
+# Build stage: use Docker Hardened Images (DHI) for security and smaller size
+FROM dhi.io/node:24-alpine3.23-dev AS builder
 WORKDIR /app
+
+# Enable corepack and activate specific pnpm version
 RUN corepack enable && corepack prepare pnpm@10.30.2 --activate
+
+# Copy lockfiles and config first for cache efficiency
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
-  pnpm install --frozen-lockfile --store-dir=/pnpm/store
+
+# Install dependencies with cache mount for speed
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile
+
+# Copy the rest of the source
 COPY . .
-RUN pnpm build && CI=true pnpm prune --prod
 
-FROM node:24-bookworm-slim
+# Set CI=true to avoid pnpm prune TTY errors
+ENV CI=true
 
+# Build and prune dev dependencies
+RUN pnpm build && pnpm prune --prod
+
+# Production stage: minimal runtime image
+FROM dhi.io/node:24-alpine3.23
 WORKDIR /app
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends libc++1 \
-  && rm -rf /var/lib/apt/lists/*
-COPY --chown=node:node --from=build /app/build ./build
-COPY --chown=node:node --from=build /app/node_modules ./node_modules
-COPY --chown=node:node --from=build /app/package.json ./package.json
 
+# Copy built assets and production dependencies
+COPY --from=builder --chown=node:node /app/build ./build
+COPY --from=builder --chown=node:node /app/node_modules ./node_modules
+COPY --from=builder --chown=node:node /app/package.json ./package.json
+
+# Set environment variables
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000
-EXPOSE 3000
+
+EXPOSE 5173
 USER node
+
+# Start the app
 CMD ["node", "build"]

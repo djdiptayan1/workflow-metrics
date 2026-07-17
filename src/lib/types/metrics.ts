@@ -114,6 +114,8 @@ export interface StepBreakdown {
 	samples: number;
 }
 
+export type AverageDurationWindow = 'recent_150' | 'recent_14_days';
+
 export interface DashboardData {
 	owner: string;
 	repo: string;
@@ -122,6 +124,7 @@ export interface DashboardData {
 	totalRunsIsCapped: boolean;
 	successRate: number;
 	avgDurationMs: number;
+	averageDurationWindow: AverageDurationWindow;
 	activeWorkflows: number;
 	runTrend: RunDataPoint[];
 	workflowMetrics: WorkflowMetrics[];

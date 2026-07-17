@@ -133,22 +133,29 @@ describe('Redis workflow cache', () => {
 	});
 
 	it('serves fresh snapshots and rejects a different DORA selection', async () => {
-		await setDashboardSnapshot('u1', 'acme', 'app', '30', dashboard, []);
-		expect(await getDashboardSnapshot('u1', 'acme', 'app', '30', 300_000, [])).toMatchObject({
+		await setDashboardSnapshot('u1', 'acme', 'app', '30', 'recent_150', dashboard, []);
+		expect(
+			await getDashboardSnapshot('u1', 'acme', 'app', '30', 'recent_150', 300_000, [])
+		).toMatchObject({
 			isStale: false,
 			dashboardData: dashboard
 		});
-		expect(await getDashboardSnapshot('u1', 'acme', 'app', '30', 300_000, [7])).toBeNull();
+		expect(
+			await getDashboardSnapshot('u1', 'acme', 'app', '30', 'recent_150', 300_000, [7])
+		).toBeNull();
+		expect(
+			await getDashboardSnapshot('u1', 'acme', 'app', '30', 'recent_14_days', 300_000, [])
+		).toBeNull();
 	});
 
 	it('marks snapshots stale after the configured freshness without discarding them', async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
-		await setDashboardSnapshot('u1', 'acme', 'app', '30', dashboard, []);
+		await setDashboardSnapshot('u1', 'acme', 'app', '30', 'recent_150', dashboard, []);
 		vi.advanceTimersByTime(301_000);
-		expect(await getDashboardSnapshot('u1', 'acme', 'app', '30', 300_000, [])).toMatchObject({
-			isStale: true
-		});
+		expect(
+			await getDashboardSnapshot('u1', 'acme', 'app', '30', 'recent_150', 300_000, [])
+		).toMatchObject({ isStale: true });
 	});
 
 	it('isolates lookbacks and paginates 26k runs without a bulk response', async () => {

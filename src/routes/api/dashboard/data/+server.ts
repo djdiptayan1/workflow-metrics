@@ -18,7 +18,7 @@ import {
 	type ActionsLookback
 } from '$lib/server/workflow-runs-cache';
 import type { GitHubWorkflowRun } from '$lib/types/github';
-import type { DashboardData } from '$lib/types/metrics';
+import type { AverageDurationWindow, DashboardData } from '$lib/types/metrics';
 import type { RequestHandler } from './$types';
 
 type SyncMode = 'none' | 'cached-runs' | 'cold' | 'incremental' | 'reconcile' | 'locked';
@@ -28,6 +28,7 @@ interface DashboardContext {
 	owner: string;
 	repo: string;
 	lookback: ActionsLookback;
+	averageDurationWindow: AverageDurationWindow;
 	days: number | null;
 	doraWorkflowIds: number[];
 	octokit: ReturnType<typeof createOctokit>;
@@ -54,7 +55,8 @@ async function syncDashboard(
 	callbacks: SyncCallbacks = {},
 	forceCachedRuns = false
 ): Promise<{ data: DashboardData; sync: SyncMode }> {
-	const { userId, owner, repo, lookback, days, doraWorkflowIds, octokit } = context;
+	const { userId, owner, repo, lookback, averageDurationWindow, days, doraWorkflowIds, octokit } =
+		context;
 	const cachedRuns = await getWorkflowRuns(userId, owner, repo, lookback);
 	const due = cachedRuns.length > 0 && (await reconciliationDue(userId, owner, repo, lookback));
 	let runs: GitHubWorkflowRun[] | undefined;
@@ -83,6 +85,7 @@ async function syncDashboard(
 		cachedRuns: runs,
 		doraWorkflowIds,
 		cacheUserId: userId,
+		averageDurationWindow,
 		onProgress: callbacks.onFetchProgress,
 		onRepairProgress: callbacks.onRepairProgress,
 		onComputeStart: callbacks.onComputeStart,
@@ -92,7 +95,15 @@ async function syncDashboard(
 	});
 
 	await storeWorkflowRuns(userId, owner, repo, lookback, fetchedRuns);
-	await setDashboardSnapshot(userId, owner, repo, lookback, data, doraWorkflowIds);
+	await setDashboardSnapshot(
+		userId,
+		owner,
+		repo,
+		lookback,
+		averageDurationWindow,
+		data,
+		doraWorkflowIds
+	);
 	if (sync === 'cold' || sync === 'reconcile') await markReconciled(userId, owner, repo, lookback);
 	return { data, sync };
 }
@@ -118,7 +129,7 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 			.single(),
 		locals.supabase
 			.from('user_settings')
-			.select('dashboard_refresh_interval')
+			.select('dashboard_refresh_interval, average_duration_window')
 			.eq('user_id', user.id)
 			.single()
 	]);
@@ -132,6 +143,8 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 		.eq('repository_id', repository.id);
 	const doraWorkflowIds = doraWorkflows?.map((workflow) => workflow.workflow_id) ?? [];
 	const refreshInterval = settings?.dashboard_refresh_interval ?? '5';
+	const averageDurationWindow: AverageDurationWindow =
+		settings?.average_duration_window === 'recent_14_days' ? 'recent_14_days' : 'recent_150';
 	const freshnessMs = refreshInterval === 'realtime' ? 0 : Number(refreshInterval) * 60_000;
 
 	let snapshot;
@@ -141,6 +154,7 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 			owner,
 			repo,
 			lookback,
+			averageDurationWindow,
 			freshnessMs,
 			doraWorkflowIds
 		);
@@ -154,6 +168,7 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 		owner,
 		repo,
 		lookback,
+		averageDurationWindow,
 		days,
 		doraWorkflowIds,
 		octokit: createOctokit(githubAccessToken)

@@ -27,6 +27,7 @@
 		aiModelLabel,
 		lookbackLabel,
 		lookbackDescription,
+		averageDurationDescription,
 		actionsLookback
 	} = $derived(data);
 	let metrics = $derived(detailData.metrics);
@@ -194,7 +195,7 @@
 			subtitle="P50: {formatDuration(metrics.p50DurationMs)} · P95: {formatDuration(
 				metrics.p95DurationMs
 			)}"
-			help="P50 is the median: half of runs finish faster. P95 means 95% of runs finish faster, highlighting the slower tail."
+			help="Average duration uses {averageDurationDescription}. P50 and P95 use {lookbackDescription}."
 		/>
 		<MetricCard
 			class="min-w-[140px] flex-1"

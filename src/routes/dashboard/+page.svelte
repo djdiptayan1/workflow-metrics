@@ -491,8 +491,13 @@
 				class="min-w-[140px] flex-1"
 				title="Avg Duration"
 				value={formatDuration(dashboardData.avgDurationMs)}
-				subtitle="per run"
-				help="Average time from when a run started until it completed, across {timeWindowDescription}."
+				subtitle={dashboardData.averageDurationWindow === 'recent_14_days'
+					? 'last 14 days'
+					: 'last 150 runs'}
+				help="Average time from run start to completion across {dashboardData.averageDurationWindow ===
+				'recent_14_days'
+					? 'runs started in the last 14 days'
+					: 'the most recent 150 completed runs'}."
 				icon={'<svg class="size-4 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>'}
 			/>
 			<MetricCard

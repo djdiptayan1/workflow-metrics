@@ -14,7 +14,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		locals.supabase
 			.from('user_settings')
 			.select(
-				'ai_provider, ai_model, theme, default_repo_id, actions_lookback, dashboard_refresh_interval'
+				'ai_provider, ai_model, theme, default_repo_id, actions_lookback, average_duration_window, dashboard_refresh_interval'
 			)
 			.eq('user_id', user.id)
 			.single(),
@@ -59,6 +59,10 @@ export const actions: Actions = {
 		const actionsLookback = ['7', '30', '90', 'all'].includes(String(requestedLookback))
 			? (requestedLookback as '7' | '30' | '90' | 'all')
 			: '30';
+		const averageDurationWindow =
+			formData.get('average_duration_window') === 'recent_14_days'
+				? 'recent_14_days'
+				: 'recent_150';
 		const requestedRefreshInterval = formData.get('dashboard_refresh_interval');
 		const dashboardRefreshInterval = ['realtime', '5', '10', '15'].includes(
 			String(requestedRefreshInterval)
@@ -74,6 +78,7 @@ export const actions: Actions = {
 				theme: theme || 'dark',
 				default_repo_id: defaultRepoId || null,
 				actions_lookback: actionsLookback,
+				average_duration_window: averageDurationWindow,
 				dashboard_refresh_interval: dashboardRefreshInterval,
 				updated_at: new Date().toISOString()
 			},

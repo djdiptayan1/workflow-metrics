@@ -4,11 +4,11 @@ services:
     build: .
     init: true
     ports:
-      - '5173:3000'
+      - '3000:3000'
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379
-      ORIGIN: ${ORIGIN:-http://localhost:5173}
+      ORIGIN: ${ORIGIN:-http://localhost:3000}
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     depends_on:

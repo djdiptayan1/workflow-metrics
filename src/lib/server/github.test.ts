@@ -616,6 +616,60 @@ describe('fetchWorkflowFileCommits', () => {
 });
 
 describe('buildDashboardData', () => {
+	it('bounds average duration to the configured recent-run window', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-07-18T12:00:00Z'));
+		try {
+			const octokit = createOctokit('test-token');
+			vi.mocked(octokit.rest.actions.listRepoWorkflows).mockResolvedValue({
+				data: {
+					workflows: [{ id: 1, name: 'CI', path: '.github/workflows/ci.yml', state: 'active' }]
+				}
+			} as never);
+			vi.mocked(octokit.rest.repos.listCommits).mockResolvedValue({ data: [] } as never);
+			vi.mocked(octokit.rest.repos.getContent).mockRejectedValue(new Error('unavailable'));
+
+			const run = (id: number, startedAt: string, durationMs: number) =>
+				({
+					id,
+					name: 'CI',
+					workflow_id: 1,
+					status: 'completed',
+					conclusion: 'success',
+					created_at: startedAt,
+					run_started_at: startedAt,
+					updated_at: new Date(Date.parse(startedAt) + durationMs).toISOString(),
+					effective_completed_at: new Date(Date.parse(startedAt) + durationMs).toISOString(),
+					timing_quality: 'original'
+				}) as GitHubWorkflowRun;
+
+			const recentRuns = Array.from({ length: 151 }, (_, index) => {
+				const startedAt = new Date(Date.now() - index * 60_000).toISOString();
+				return run(index + 1, startedAt, index === 150 ? 60_000 : 10 * 60_000);
+			});
+			const recentResult = await buildDashboardData(octokit, 'owner', 'repo', {
+				cachedRuns: recentRuns,
+				days: null,
+				averageDurationWindow: 'recent_150'
+			});
+			expect(recentResult.avgDurationMs).toBe(10 * 60_000);
+			expect(recentResult.workflowMetrics[0].avgDurationMs).toBe(10 * 60_000);
+
+			const fourteenDayResult = await buildDashboardData(octokit, 'owner', 'repo', {
+				cachedRuns: [
+					run(1, '2026-07-17T12:00:00Z', 20 * 60_000),
+					run(2, '2026-06-01T12:00:00Z', 60_000)
+				],
+				days: null,
+				averageDurationWindow: 'recent_14_days'
+			});
+			expect(fourteenDayResult.avgDurationMs).toBe(20 * 60_000);
+			expect(fourteenDayResult.workflowMetrics[0].avgDurationMs).toBe(20 * 60_000);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('uses repaired attempt timing across duration, percentile, DORA, and minutes metrics', async () => {
 		const octokit = createOctokit('test-token');
 		const corrupted = {

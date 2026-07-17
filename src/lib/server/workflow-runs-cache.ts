@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { RedisClientType } from 'redis';
 import type { GitHubWorkflowRun } from '$lib/types/github';
-import type { DashboardData, RecentRun, WorkflowDetailData } from '$lib/types/metrics';
+import type {
+	AverageDurationWindow,
+	DashboardData,
+	RecentRun,
+	WorkflowDetailData
+} from '$lib/types/metrics';
 import { getRedisClient } from '$lib/server/redis';
 import { getRunTiming } from '$lib/server/run-timing';
 
@@ -42,15 +47,22 @@ function baseKey(userId: string, owner: string, repo: string): string {
 	return `workflow-metrics:${CACHE_VERSION}:${part(userId)}:${part(owner)}:${part(repo)}`;
 }
 
-function keys(userId: string, owner: string, repo: string, lookback: ActionsLookback) {
+function keys(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback,
+	averageDurationWindow: AverageDurationWindow = 'recent_150'
+) {
 	const base = baseKey(userId, owner, repo);
 	return {
 		runs: `${base}:runs`,
 		repoIndex: `${base}:index:${lookback}:repo`,
 		workflowIds: `${base}:index:${lookback}:workflow-ids`,
 		workflowIndex: (workflowId: number) => `${base}:index:${lookback}:workflow:${workflowId}`,
-		snapshot: `${base}:snapshot:${lookback}`,
-		detailSnapshot: (workflowId: number) => `${base}:snapshot:${lookback}:workflow:${workflowId}`,
+		snapshot: `${base}:snapshot:${lookback}:avg:${averageDurationWindow}`,
+		detailSnapshot: (workflowId: number) =>
+			`${base}:snapshot:${lookback}:avg:${averageDurationWindow}:workflow:${workflowId}`,
 		lock: (scope: string) => `${base}:lock:${lookback}:${part(scope)}`,
 		reconciledAt: `${base}:reconciled-at:${lookback}`,
 		workflowFile: (path: string) => `${base}:workflow-file:${encodeURIComponent(path)}`
@@ -104,11 +116,12 @@ export async function getDashboardSnapshot(
 	owner: string,
 	repo: string,
 	lookback: ActionsLookback,
+	averageDurationWindow: AverageDurationWindow,
 	freshnessMs: number,
 	doraWorkflowIds: number[]
 ): Promise<CachedDashboardSnapshot | null> {
 	const client = await redis();
-	const raw = await client.get(keys(userId, owner, repo, lookback).snapshot);
+	const raw = await client.get(keys(userId, owner, repo, lookback, averageDurationWindow).snapshot);
 	if (!raw) return null;
 	try {
 		const snapshot = JSON.parse(raw) as StoredSnapshot;
@@ -135,6 +148,7 @@ export async function setDashboardSnapshot(
 	owner: string,
 	repo: string,
 	lookback: ActionsLookback,
+	averageDurationWindow: AverageDurationWindow,
 	dashboardData: DashboardData,
 	doraWorkflowIds: number[]
 ): Promise<void> {
@@ -144,9 +158,13 @@ export async function setDashboardSnapshot(
 		fetchedAt: new Date().toISOString(),
 		doraWorkflowIds
 	};
-	await client.set(keys(userId, owner, repo, lookback).snapshot, JSON.stringify(snapshot), {
-		PX: STALE_TTL_MS
-	});
+	await client.set(
+		keys(userId, owner, repo, lookback, averageDurationWindow).snapshot,
+		JSON.stringify(snapshot),
+		{
+			PX: STALE_TTL_MS
+		}
+	);
 }
 
 export async function storeWorkflowRuns(
@@ -224,11 +242,12 @@ export async function getWorkflowDetailSnapshot(
 	repo: string,
 	lookback: ActionsLookback,
 	workflowId: number,
+	averageDurationWindow: AverageDurationWindow,
 	freshnessMs: number
 ): Promise<{ data: WorkflowDetailData; isStale: boolean } | null> {
 	const raw = await (
 		await redis()
-	).get(keys(userId, owner, repo, lookback).detailSnapshot(workflowId));
+	).get(keys(userId, owner, repo, lookback, averageDurationWindow).detailSnapshot(workflowId));
 	if (!raw) return null;
 	try {
 		const parsed = JSON.parse(raw) as { data: WorkflowDetailData; fetchedAt: string };
@@ -246,12 +265,13 @@ export async function setWorkflowDetailSnapshot(
 	repo: string,
 	lookback: ActionsLookback,
 	workflowId: number,
+	averageDurationWindow: AverageDurationWindow,
 	data: WorkflowDetailData
 ): Promise<void> {
 	await (
 		await redis()
 	).set(
-		keys(userId, owner, repo, lookback).detailSnapshot(workflowId),
+		keys(userId, owner, repo, lookback, averageDurationWindow).detailSnapshot(workflowId),
 		JSON.stringify({ data, fetchedAt: new Date().toISOString() }),
 		{ PX: STALE_TTL_MS }
 	);

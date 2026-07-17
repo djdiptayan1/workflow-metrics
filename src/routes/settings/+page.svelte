@@ -22,12 +22,14 @@
 	// form never reverts unsaved edits made in the other (both forms bind to these).
 	let theme = $state<ThemePreference>('dark');
 	let actionsLookback = $state('30');
+	let averageDurationWindow = $state('recent_150');
 	let dashboardRefreshInterval = $state('5');
 	let preferencesInitialized = false;
 	$effect(() => {
 		if (preferencesInitialized) return;
 		theme = loadStoredTheme();
 		actionsLookback = data.settings?.actions_lookback ?? '30';
+		averageDurationWindow = data.settings?.average_duration_window ?? 'recent_150';
 		dashboardRefreshInterval = data.settings?.dashboard_refresh_interval ?? '5';
 		preferencesInitialized = true;
 	});
@@ -252,6 +254,7 @@
 			<input type="hidden" name="theme" value={theme} />
 			<input type="hidden" name="default_repo_id" value={defaultRepoId} />
 			<input type="hidden" name="actions_lookback" value={actionsLookback} />
+			<input type="hidden" name="average_duration_window" value={averageDurationWindow} />
 			<input type="hidden" name="dashboard_refresh_interval" value={dashboardRefreshInterval} />
 			<div class="space-y-2">
 				<label class="text-foreground block text-sm font-medium" for="ai_provider"
@@ -413,7 +416,25 @@
 					<option value="all">All available history</option>
 				</select>
 				<p class="text-muted-foreground text-xs">
-					Controls the history used by dashboard metrics, charts, and workflow details.
+					Controls totals, rates, charts, recent runs, and workflow details.
+				</p>
+			</div>
+
+			<div class="space-y-2">
+				<label class="text-foreground block text-sm font-medium" for="average_duration_window">
+					Average duration
+				</label>
+				<select
+					id="average_duration_window"
+					name="average_duration_window"
+					bind:value={averageDurationWindow}
+					class="bg-background border-input text-foreground focus:ring-ring rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:outline-none"
+				>
+					<option value="recent_150">Most recent 150 runs</option>
+					<option value="recent_14_days">Runs from the last 14 days</option>
+				</select>
+				<p class="text-muted-foreground text-xs">
+					Controls only average run duration, using runs available in Actions history.
 				</p>
 			</div>
 

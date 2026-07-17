@@ -17,6 +17,7 @@ import {
 	type ActionsLookback
 } from '$lib/server/workflow-runs-cache';
 import type { PageServerLoad } from './$types';
+import type { AverageDurationWindow } from '$lib/types/metrics';
 
 const MAX_TREND_POINTS = 500;
 const compactDetailData = (detailData: Awaited<ReturnType<typeof buildWorkflowDetailData>>) => {
@@ -67,12 +68,20 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 	const [{ data: settings }, hasAiKey] = await Promise.all([
 		locals.supabase
 			.from('user_settings')
-			.select('ai_provider, ai_model, actions_lookback, dashboard_refresh_interval')
+			.select(
+				'ai_provider, ai_model, actions_lookback, average_duration_window, dashboard_refresh_interval'
+			)
 			.eq('user_id', user.id)
 			.single(),
 		hasAiApiKey(user.id)
 	]);
 	const actionsLookback = (settings?.actions_lookback ?? '30') as ActionsLookback;
+	const averageDurationWindow: AverageDurationWindow =
+		settings?.average_duration_window === 'recent_14_days' ? 'recent_14_days' : 'recent_150';
+	const averageDurationDescription =
+		averageDurationWindow === 'recent_14_days'
+			? 'runs started in the last 14 days'
+			: 'the most recent 150 completed runs';
 	const refreshInterval = settings?.dashboard_refresh_interval ?? '5';
 	const freshnessMs = refreshInterval === 'realtime' ? 0 : Number(refreshInterval) * 60_000;
 	const lookbackDays = actionsLookback === 'all' ? undefined : Number(actionsLookback);
@@ -92,6 +101,7 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 			repoParam,
 			actionsLookback,
 			workflowId,
+			averageDurationWindow,
 			freshnessMs
 		);
 		const response = (detailData: Awaited<ReturnType<typeof buildWorkflowDetailData>>) => ({
@@ -102,6 +112,7 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 			aiModelLabel,
 			lookbackLabel,
 			lookbackDescription,
+			averageDurationDescription,
 			actionsLookback
 		});
 		if (snapshot && !snapshot.isStale) return response(snapshot.data);
@@ -132,6 +143,7 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 				days: lookbackDays,
 				cachedRuns: fetchedRuns.length > 0 ? fetchedRuns : undefined,
 				cacheUserId: user.id,
+				averageDurationWindow,
 				onRunsFetched: (runs) => {
 					fetchedRuns = runs;
 				}
@@ -153,6 +165,7 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 				repoParam,
 				actionsLookback,
 				workflowId,
+				averageDurationWindow,
 				compactDetail
 			);
 			return compactDetail;
