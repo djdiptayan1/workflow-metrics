@@ -12,6 +12,9 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+      PUBLIC_SUPABASE_ANON_KEY: placeholder-publishable-key
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
@@ -26,6 +29,3 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
-        env:
-          PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
-          PUBLIC_SUPABASE_ANON_KEY: placeholder-publishable-key
