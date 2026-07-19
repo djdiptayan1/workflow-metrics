@@ -1,4 +1,6 @@
 import { error, json } from '@sveltejs/kit';
+import { env } from '$env/dynamic/private';
+import { waitUntil } from '@vercel/functions';
 import {
 	buildDashboardData,
 	createOctokit,
@@ -187,9 +189,11 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 	if (snapshot?.isStale) {
 		const token = await acquireSyncLock(user.id, owner, repo, lookback).catch(() => null);
 		if (token) {
-			void syncDashboard(context)
+			const refresh = syncDashboard(context)
 				.catch((cause) => console.warn('[api/dashboard/data] Background refresh failed', cause))
 				.finally(() => releaseSyncLock(user.id, owner, repo, lookback, token).catch(() => {}));
+			if (env.VERCEL) waitUntil(refresh);
+			else void refresh;
 		}
 		return respond(snapshot.dashboardData, 'stale', token ? 'incremental' : 'locked');
 	}

@@ -115,58 +115,18 @@ Coverage is enforced at: lines/functions/statements ≥ 80%, branches ≥ 70%.
 
 On every pull request to `main`, GitHub Actions runs:
 
+- **Check**: Svelte and TypeScript diagnostics
 - **Lint**: ESLint (TypeScript + Svelte)
-- **Test**: Vitest with v8 coverage, uploaded to [Codecov](https://codecov.io/)
+- **Test**: Vitest unit suite
 - **Build**: SvelteKit build check
-- **Security**: `pnpm audit --audit-level=high` (fails on high or critical vulnerabilities)
-- **Dependency Review**: Scans dependency manifest changes for known vulnerabilities
 
-Workflow file: [.github/workflows/pull-request.yml](.github/workflows/pull-request.yml).
-
-## Security (Harden Runner)
-
-All GitHub Actions workflows use [step-security/harden-runner](https://github.com/step-security/harden-runner) with **egress blocking** to mitigate supply chain attacks. Only explicitly allowed endpoints can be reached.
-
-**What it does:**
-
-- Monitors network egress to detect unauthorized outbound calls
-- Tracks file integrity to detect tampering
-- Monitors process activity for suspicious behavior
-
-**Workflows protected:**
-
-- [.github/workflows/pull-request.yml](.github/workflows/pull-request.yml) — CI checks
-- [.github/workflows/release.yml](.github/workflows/release.yml) — Release automation
-- [.github/workflows/codeql-analysis.yml](.github/workflows/codeql-analysis.yml) — CodeQL static analysis
-- [.github/workflows/scorecard.yml](.github/workflows/scorecard.yml) — OpenSSF Scorecard
-
-Audit results and insights are available at the [Step Security dashboard](https://app.stepsecurity.io/).
-
-## Release & Publishing
-
-### Automated Release
-
-Releases are automated with [Semantic Release](https://semantic-release.gitbook.io/). On every **push to `main`**:
-
-1. **Test** job runs: lint, unit tests (Vitest), and build.
-2. **Release** job runs only if tests pass: Semantic Release analyzes commits, bumps the version, updates `package.json` and `CHANGELOG.md`, pushes a release commit, and creates a GitHub release.
-3. Production deployment is managed separately from the release workflow using the Node container image and Redis.
-
-Use [Conventional Commits](https://www.conventionalcommits.org/) so versions and changelog are derived from commit messages:
-
-- `feat: ...` → minor release (e.g. 1.1.0)
-- `fix: ...` → patch (e.g. 1.0.1)
-- `feat!: ...` or `fix!: ...` → major (e.g. 2.0.0)
-- `docs:`, `chore:`, etc. → no release (included in changelog when relevant)
-
-Workflow: [.github/workflows/release.yml](.github/workflows/release.yml).
+Workflow file: [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ### Deployment
 
-The supported runtime is the production Node container plus Redis.
-`CI_OBSERVE_IMAGE=workflow-metrics:local docker compose up -d --build` starts both services from
-local source; managed environments must provide the same application environment variables and a
-private `REDIS_URL` (use `rediss://` for TLS in production). Releases do not deploy automatically.
+The application supports Vercel and the production Node container. Both runtimes use Supabase and
+Redis with the same application environment variables; managed Redis endpoints must use TLS.
+`CI_OBSERVE_IMAGE=workflow-metrics:local docker compose up -d --build` starts the self-hosted stack.
 
 ## Stack
 
@@ -177,7 +137,7 @@ private `REDIS_URL` (use `rediss://` for TLS in production). Releases do not dep
 - **GitHub API**: [@octokit/rest](https://github.com/octokit/rest.js)
 - **AI**: [Vercel AI SDK](https://sdk.vercel.ai/) + [@ai-sdk/mistral](https://sdk.vercel.ai/providers/ai-sdk-providers/mistral)
 - **Graph Visualization**: [@xyflow/svelte](https://svelteflow.dev/)
-- **Deployment**: Node 24 container via `@sveltejs/adapter-node`, backed by Redis 8
-- **Testing**: [Vitest 3](https://vitest.dev/) + v8 coverage + [Codecov](https://codecov.io/)
+- **Deployment**: Vercel or Node 24 container, backed by Redis 8
+- **Testing**: [Vitest 3](https://vitest.dev/) + v8 coverage
 - **Linting**: ESLint 9 + `eslint-plugin-svelte` + `typescript-eslint`
 - **Packaging**: PNPM 10

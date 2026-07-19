@@ -1,12 +1,7 @@
 # Workflow Metrics
 
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/timoa/workflow-metrics/badge)](https://securityscorecards.dev/viewer/?uri=github.com/timoa/workflow-metrics)
-[![Coverage Status](https://codecov.io/gh/timoa/workflow-metrics/branch/main/graph/badge.svg)](https://codecov.io/gh/timoa/workflow-metrics)
-[![Dependency Review](https://github.com/timoa/workflow-metrics/actions/workflows/dependency-review.yml/badge.svg)](https://github.com/timoa/workflow-metrics/actions/workflows/dependency-review.yml)
-[![CodeQL](https://github.com/timoa/workflow-metrics/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/timoa/workflow-metrics/actions/workflows/codeql-analysis.yml)
-[![OpenSSF Scorecard](https://github.com/timoa/workflow-metrics/actions/workflows/scorecard.yml/badge.svg)](https://github.com/timoa/workflow-metrics/actions/workflows/scorecard.yml)
-[![Release](https://github.com/timoa/workflow-metrics/actions/workflows/release.yml/badge.svg)](https://github.com/timoa/workflow-metrics/actions/workflows/release.yml)
-[![License](https://img.shields.io/github/license/timoa/workflow-metrics)](LICENSE)
+[![CI](https://github.com/djdiptayan1/workflow-metrics/actions/workflows/ci.yml/badge.svg)](https://github.com/djdiptayan1/workflow-metrics/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/djdiptayan1/workflow-metrics)](LICENSE)
 
 An open-source dashboard for GitHub Actions metrics with AI-powered optimization suggestions.
 
@@ -145,7 +140,7 @@ redirect URL.
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/timoa/workflow-metrics.git
+git clone https://github.com/djdiptayan1/workflow-metrics.git
 cd workflow-metrics
 pnpm install
 ```
@@ -329,10 +324,6 @@ Tables:
 - `dora_workflows` — User-selected workflows used for DORA calculations
 
 - `workflow_preferences` — Pinned workflow and environment classification preferences
-
-## Related Projects
-
-**[Workflow Editor](https://github.com/timoa/workflow-editor)** — A VSCode extension that lets you edit GitHub Actions workflow files visually: jobs and dependencies as an interactive diagram, trigger configuration, matrix strategy, and step editing — all without touching YAML directly. A great companion to Workflow Metrics when you want to act on the insights and improve your workflows.
 
 ## Contributing
 

@@ -1,4 +1,6 @@
 import { redirect, error, isHttpError } from '@sveltejs/kit';
+import { env } from '$env/dynamic/private';
+import { waitUntil } from '@vercel/functions';
 import {
 	createOctokit,
 	buildWorkflowDetailData,
@@ -180,13 +182,15 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 				scope
 			).catch(() => null);
 			if (token) {
-				void buildAndCache(true)
+				const refresh = buildAndCache(true)
 					.catch((cause) => console.warn('[workflow-detail] Background refresh failed', cause))
 					.finally(() =>
 						releaseSyncLock(user.id, ownerParam, repoParam, actionsLookback, token, scope).catch(
 							() => {}
 						)
 					);
+				if (env.VERCEL) waitUntil(refresh);
+				else void refresh;
 			}
 			return response(snapshot.data);
 		}
