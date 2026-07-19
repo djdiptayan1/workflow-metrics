@@ -80,7 +80,49 @@ export interface MinutesDataPoint {
 	minutes: number;
 }
 
-export type RunnerType = 'ubuntu' | 'windows' | 'macos' | 'mixed' | 'unknown';
+export type RunnerType =
+	| 'ubuntu'
+	| 'ubuntu-slim'
+	| 'ubuntu-arm'
+	| 'windows'
+	| 'windows-arm'
+	| 'macos'
+	| 'macos-large'
+	| 'macos-xlarge'
+	| 'self-hosted'
+	| 'mixed'
+	| 'unknown';
+
+export type GitHubPlan = 'free' | 'pro' | 'team' | 'enterprise' | 'unknown';
+
+export interface ActionsCostLine {
+	runnerType: RunnerType;
+	label: string;
+	pricingLabel: string | null;
+	sku: string | null;
+	minutes: number;
+	rateUsd: number | null;
+	subtotalUsd: number | null;
+	githubChargeUsd: number | null;
+	includedEligible: boolean;
+}
+
+export interface ActionsCostEstimate {
+	visibility: 'public' | 'private';
+	plan: GitHubPlan;
+	includedMinutes: number | null;
+	grossCostUsd: number;
+	chargeAfterAllowanceUsd: number;
+	unknownMinutes: number;
+	confidence: 'estimated' | 'partial';
+	basis: 'workflow-runtime' | 'sampled-jobs';
+	sampledRuns?: number;
+	projectedRuns?: number;
+	lines: ActionsCostLine[];
+	verifiedAt: string;
+	pricingUrl: string;
+	includedUsageUrl: string;
+}
 
 export interface WorkflowMinutesShare {
 	workflowName: string;
@@ -96,6 +138,8 @@ export interface WorkflowMinutesShare {
 	runnerType: RunnerType;
 	/** True when runner type was successfully parsed from the workflow file. */
 	runnerDetected: boolean;
+	/** Literal runs-on label read from the workflow file. */
+	runnerLabel?: string;
 }
 
 export interface JobMinutesShare {
@@ -106,6 +150,10 @@ export interface JobMinutesShare {
 	billableMinutes: number;
 	/** Percentage share of all job minutes (0–100). */
 	percentage: number;
+	runnerType?: RunnerType;
+	runnerDetected?: boolean;
+	/** Literal runner label reported by the GitHub jobs API. */
+	runnerLabel?: string;
 }
 
 export interface StepBreakdown {
@@ -159,6 +207,7 @@ export interface DashboardData {
 	doraWorkflowIds: number[];
 	/** True if user has selected specific workflows for DORA metrics; false if no selection. */
 	hasDoraWorkflowsSelected: boolean;
+	actionsCostEstimate?: ActionsCostEstimate;
 }
 
 export interface RecentRun {
@@ -193,6 +242,10 @@ export interface WorkflowDetailData {
 	billableMinutes30d: number;
 	/** Per-job breakdown of minute consumption (based on last 5 runs). */
 	minutesByJob: JobMinutesShare[];
+	/** Completed runs covered by the job-level cost projection. */
+	completedRunCount: number;
+	/** Recent completed runs sampled for job-level runner data. */
+	jobMinutesSampleRunCount: number;
 	/** Daily total minutes trend for this workflow. */
 	minutesTrend: MinutesDataPoint[];
 	/** Minutes spent in failed or cancelled runs (waste). */
@@ -207,6 +260,7 @@ export interface WorkflowDetailData {
 	jobGraphEdges: WorkflowJobEdge[];
 	workflowContent: string | null;
 	latestFailure: WorkflowFailure | null;
+	actionsCostEstimate?: ActionsCostEstimate;
 }
 
 export interface WorkflowFailure {

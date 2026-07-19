@@ -5,6 +5,7 @@ import {
 	fetchWorkflows,
 	fetchWorkflowRuns,
 	fetchAllWorkflowRunsForRepo,
+	fetchWorkflowRunPageChunk,
 	fetchSingleWorkflowRuns,
 	fetchAllSingleWorkflowRuns,
 	fetchJobsForRun,
@@ -147,6 +148,39 @@ describe('fetchWorkflows', () => {
 
 		const result = await fetchWorkflows(octokit, 'owner', 'repo');
 		expect(result).toEqual([]);
+	});
+});
+
+describe('fetchWorkflowRunPageChunk', () => {
+	it('bounds a 26k-run import and returns a resumable next page', async () => {
+		const octokit = createOctokit('test-token');
+		vi.mocked(octokit.rest.actions.listWorkflowRunsForRepo).mockImplementation(async (options) => {
+			const page = options?.page ?? 1;
+			const firstId = (page - 1) * 100 + 1;
+			return {
+				data: {
+					total_count: 26_000,
+					workflow_runs: Array.from({ length: 100 }, (_, index) => ({
+						id: firstId + index,
+						workflow_id: 1,
+						status: 'completed',
+						created_at: new Date(Date.UTC(2026, 0, 1, 0, 0, firstId + index)).toISOString()
+					}))
+				}
+			} as never;
+		});
+
+		const first = await fetchWorkflowRunPageChunk(octokit, 'owner', 'repo', 1, 75);
+		expect(first).toMatchObject({
+			expectedRuns: 26_000,
+			pagesFetched: 75,
+			nextPage: 76
+		});
+		expect(first.runs).toHaveLength(7_500);
+
+		const overlapping = await fetchWorkflowRunPageChunk(octokit, 'owner', 'repo', 74, 75);
+		expect(overlapping).toMatchObject({ pagesFetched: 75, nextPage: 149 });
+		expect(overlapping.runs[0].id).toBe(14_800);
 	});
 });
 

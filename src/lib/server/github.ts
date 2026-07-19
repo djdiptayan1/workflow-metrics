@@ -115,6 +115,13 @@ const WORKFLOW_RUN_CONCURRENCY = 3;
 const MAX_RATE_LIMIT_RETRIES = 2;
 const MAX_CONCURRENT_IMPORT_ATTEMPTS = 2;
 
+export interface WorkflowRunPageChunk {
+	runs: GitHubWorkflowRun[];
+	expectedRuns: number;
+	pagesFetched: number;
+	nextPage: number | null;
+}
+
 interface WorkflowRunRequestState {
 	serial: boolean;
 	serialTail: Promise<void>;
@@ -231,6 +238,68 @@ function uniqueSortedRuns(runs: GitHubWorkflowRun[]): GitHubWorkflowRun[] {
 	return [...new Map(runs.map((run) => [run.id, run])).values()].sort(
 		(a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id
 	);
+}
+
+/** Fetches a bounded page range for resumable serverless all-time imports. */
+export async function fetchWorkflowRunPageChunk(
+	octokit: Octokit,
+	owner: string,
+	repo: string,
+	startPage: number,
+	maxPages: number,
+	onProgress?: ProgressCallback
+): Promise<WorkflowRunPageChunk> {
+	const state: WorkflowRunRequestState = {
+		serial: false,
+		serialTail: Promise.resolve(),
+		retries: 0,
+		rateLimitRemaining: null
+	};
+	const firstPage = Math.max(1, startPage);
+	const first = await requestWorkflowRunsForRepo(octokit, owner, repo, state, {
+		per_page: WORKFLOW_RUN_PAGE_SIZE,
+		page: firstPage
+	});
+	const expectedRuns = first.data.total_count ?? first.data.workflow_runs.length;
+	const lastPage = Math.max(1, Math.ceil(expectedRuns / WORKFLOW_RUN_PAGE_SIZE));
+	const endPage = Math.min(lastPage, firstPage + Math.max(1, maxPages) - 1);
+	const pages = new Map<number, GitHubWorkflowRun[]>([
+		[
+			firstPage,
+			((first.data.workflow_runs ?? []) as unknown as GitHubWorkflowRun[]).map(normalizeWorkflowRun)
+		]
+	]);
+	onProgress?.(pages.get(firstPage)?.length ?? 0, expectedRuns, firstPage);
+
+	for (let page = firstPage + 1; page <= endPage; page += WORKFLOW_RUN_CONCURRENCY) {
+		const pageNumbers = Array.from(
+			{ length: Math.min(WORKFLOW_RUN_CONCURRENCY, endPage - page + 1) },
+			(_, index) => page + index
+		);
+		const batch = await mapLimit(pageNumbers, WORKFLOW_RUN_CONCURRENCY, async (pageNumber) => {
+			const { data } = await requestWorkflowRunsForRepo(octokit, owner, repo, state, {
+				per_page: WORKFLOW_RUN_PAGE_SIZE,
+				page: pageNumber
+			});
+			const runs = ((data.workflow_runs ?? []) as unknown as GitHubWorkflowRun[]).map(
+				normalizeWorkflowRun
+			);
+			onProgress?.(
+				[...pages.values()].reduce((sum, value) => sum + value.length, 0) + runs.length,
+				expectedRuns,
+				pageNumber
+			);
+			return [pageNumber, runs] as const;
+		});
+		for (const [pageNumber, runs] of batch) pages.set(pageNumber, runs);
+	}
+
+	return {
+		runs: uniqueSortedRuns([...pages.values()].flat()),
+		expectedRuns,
+		pagesFetched: pages.size,
+		nextPage: endPage < lastPage ? endPage + 1 : null
+	};
 }
 
 async function fetchWorkflowRunsConcurrently(
@@ -928,10 +997,35 @@ function runsToRecentRuns(runs: GitHubWorkflowRun[], workflows: GitHubWorkflow[]
  * Linux (ubuntu-*): ×1 · Windows (windows-*): ×2 · macOS (macos-*): ×10
  */
 function getRunnerMultiplier(labels: string[]): number {
-	const s = labels.join(' ').toLowerCase();
-	if (s.includes('macos') || s.includes('mac-') || s.includes('osx')) return 10;
-	if (s.includes('windows')) return 2;
+	const runnerType = getRunnerType(labels);
+	if (runnerType === 'macos' || runnerType === 'macos-large' || runnerType === 'macos-xlarge')
+		return 10;
+	if (runnerType === 'windows' || runnerType === 'windows-arm') return 2;
 	return 1;
+}
+
+function getRunnerType(labels: string[]): RunnerType {
+	const value = labels.join(' ').toLowerCase();
+	if (value.includes('self-hosted')) return 'self-hosted';
+	if (/macos-(latest|\d+)-xlarge/.test(value)) return 'macos-xlarge';
+	if (/macos-(latest|\d+)-large/.test(value)) return 'macos-large';
+	if (value.includes('ubuntu-slim')) return 'ubuntu-slim';
+	if (value.includes('core') || value.includes('gpu')) return 'unknown';
+	if (value.includes('ubuntu') && value.includes('arm')) return 'ubuntu-arm';
+	if (value.includes('windows') && value.includes('arm')) return 'windows-arm';
+	if (value.includes('ubuntu')) return 'ubuntu';
+	if (value.includes('windows')) return 'windows';
+	if (value.includes('macos') || value.includes('mac-') || value.includes('osx')) return 'macos';
+	return 'unknown';
+}
+
+function getRunnerDisplayLabel(job: GitHubJob): string | undefined {
+	const generic = new Set(['self-hosted', 'linux', 'windows', 'macos', 'x64', 'arm64', 'arm']);
+	return (
+		job.labels.find((label) => !generic.has(label.toLowerCase())) ??
+		job.runner_name ??
+		job.labels[0]
+	);
 }
 
 /** Fetches a workflow YAML file from the repo and returns its raw string content. */
@@ -968,6 +1062,7 @@ interface WorkflowRunnerInfo {
 	multiplier: number;
 	runnerType: RunnerType;
 	detected: boolean;
+	runnerLabel?: string;
 }
 
 /**
@@ -985,7 +1080,8 @@ function parseWorkflowRunners(content: string): WorkflowRunnerInfo {
 		if (!jobs || typeof jobs !== 'object')
 			return { multiplier: 1, runnerType: 'unknown', detected: false };
 
-		const multipliers: number[] = [];
+		const runnerTypes: RunnerType[] = [];
+		const runnerLabels: string[] = [];
 
 		for (const job of Object.values(jobs)) {
 			if (!job || typeof job !== 'object') continue;
@@ -999,8 +1095,7 @@ function parseWorkflowRunners(content: string): WorkflowRunnerInfo {
 			let labels: string[] = [];
 
 			if (runsOn === undefined || runsOn === null) {
-				// No runs-on specified → GitHub defaults to ubuntu-latest
-				labels = ['ubuntu-latest'];
+				continue;
 			} else if (typeof runsOn === 'string') {
 				// Skip template expressions — we can't resolve them statically
 				if (runsOn.includes('${{')) continue;
@@ -1013,26 +1108,23 @@ function parseWorkflowRunners(content: string): WorkflowRunnerInfo {
 				continue;
 			}
 
-			multipliers.push(getRunnerMultiplier(labels));
+			runnerTypes.push(getRunnerType(labels));
+			runnerLabels.push(labels.join(', '));
 		}
 
-		if (multipliers.length === 0) return { multiplier: 1, runnerType: 'unknown', detected: false };
+		if (runnerTypes.length === 0) return { multiplier: 1, runnerType: 'unknown', detected: false };
 
-		const avg = multipliers.reduce((a, b) => a + b, 0) / multipliers.length;
-		const unique = [...new Set(multipliers)];
+		const unique = [...new Set(runnerTypes)];
+		const runnerType: RunnerType = unique.length > 1 ? 'mixed' : unique[0];
+		const avg =
+			runnerTypes.reduce((sum, type) => sum + getRunnerMultiplier([type]), 0) / runnerTypes.length;
 
-		let runnerType: RunnerType;
-		if (unique.length > 1) {
-			runnerType = 'mixed';
-		} else if (avg >= 10) {
-			runnerType = 'macos';
-		} else if (avg >= 2) {
-			runnerType = 'windows';
-		} else {
-			runnerType = 'ubuntu';
-		}
-
-		return { multiplier: avg, runnerType, detected: true };
+		return {
+			multiplier: avg,
+			runnerType,
+			detected: runnerType !== 'unknown',
+			runnerLabel: [...new Set(runnerLabels)].join(' / ')
+		};
 	} catch {
 		return { multiplier: 1, runnerType: 'unknown', detected: false };
 	}
@@ -1154,7 +1246,8 @@ function computeMinutesOverview(
 				billableMinutes: Math.ceil(minutes * multiplier),
 				percentage: totalMinutes30d > 0 ? Math.round((minutes / totalMinutes30d) * 100) : 0,
 				runnerType: (runnerInfo?.runnerType ?? 'unknown') as RunnerType,
-				runnerDetected
+				runnerDetected,
+				runnerLabel: runnerInfo?.runnerLabel
 			};
 		})
 		.filter((w) => w.minutes > 0)
@@ -1190,6 +1283,8 @@ interface MinutesDetailMetrics {
 	totalMinutes30d: number;
 	billableMinutes30d: number;
 	minutesByJob: JobMinutesShare[];
+	completedRunCount: number;
+	jobMinutesSampleRunCount: number;
 	minutesTrend: MinutesDataPoint[];
 	wastedMinutes: number;
 	stepBreakdown: StepBreakdown[];
@@ -1233,6 +1328,8 @@ function computeMinutesDetail(
 	// Per-job minutes from sampled runs — track raw and billable separately
 	const jobMinutesMap = new Map<string, number>();
 	const jobBillableMap = new Map<string, number>();
+	const jobRunnerTypes = new Map<string, Set<RunnerType>>();
+	const jobRunnerLabels = new Map<string, Set<string>>();
 	let totalRawFromJobs = 0;
 	let totalBillableFromJobs = 0;
 
@@ -1244,6 +1341,13 @@ function computeMinutesDetail(
 				const billableMins = rawMins * getRunnerMultiplier(job.labels);
 				jobMinutesMap.set(job.name, (jobMinutesMap.get(job.name) ?? 0) + rawMins);
 				jobBillableMap.set(job.name, (jobBillableMap.get(job.name) ?? 0) + billableMins);
+				const runnerTypes = jobRunnerTypes.get(job.name) ?? new Set<RunnerType>();
+				runnerTypes.add(getRunnerType(job.labels));
+				jobRunnerTypes.set(job.name, runnerTypes);
+				const runnerLabels = jobRunnerLabels.get(job.name) ?? new Set<string>();
+				const runnerLabel = getRunnerDisplayLabel(job);
+				if (runnerLabel) runnerLabels.add(runnerLabel);
+				jobRunnerLabels.set(job.name, runnerLabels);
 				totalRawFromJobs += rawMins;
 				totalBillableFromJobs += billableMins;
 			}
@@ -1251,12 +1355,20 @@ function computeMinutesDetail(
 	}
 	const totalJobMinutes = Array.from(jobMinutesMap.values()).reduce((a, b) => a + b, 0);
 	const minutesByJob: JobMinutesShare[] = Array.from(jobMinutesMap.entries())
-		.map(([jobName, minutes]) => ({
-			jobName,
-			minutes,
-			billableMinutes: jobBillableMap.get(jobName) ?? minutes,
-			percentage: totalJobMinutes > 0 ? Math.round((minutes / totalJobMinutes) * 100) : 0
-		}))
+		.map(([jobName, minutes]) => {
+			const types = [...(jobRunnerTypes.get(jobName) ?? new Set<RunnerType>(['unknown']))];
+			const runnerType: RunnerType = types.length === 1 ? types[0] : 'mixed';
+			const runnerLabel = [...(jobRunnerLabels.get(jobName) ?? [])].join(' / ');
+			return {
+				jobName,
+				minutes,
+				billableMinutes: jobBillableMap.get(jobName) ?? minutes,
+				percentage: totalJobMinutes > 0 ? Math.round((minutes / totalJobMinutes) * 100) : 0,
+				runnerType,
+				runnerDetected: runnerType !== 'unknown' && runnerType !== 'mixed',
+				runnerLabel: runnerLabel || undefined
+			};
+		})
 		.filter((j) => j.minutes > 0)
 		.sort((a, b) => b.minutes - a.minutes);
 
@@ -1294,6 +1406,8 @@ function computeMinutesDetail(
 		totalMinutes30d,
 		billableMinutes30d,
 		minutesByJob,
+		completedRunCount: completedRuns.length,
+		jobMinutesSampleRunCount: jobsPerRun.length,
 		minutesTrend,
 		wastedMinutes,
 		stepBreakdown,

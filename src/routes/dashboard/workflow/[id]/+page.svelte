@@ -8,6 +8,7 @@
 	import MinutesTrendChart from '$lib/components/dashboard/MinutesTrendChart.svelte';
 	import OptimizePanel from '$lib/components/dashboard/OptimizePanel.svelte';
 	import WorkflowJobGraph from '$lib/components/dashboard/WorkflowJobGraph.svelte';
+	import ActionsCostDialog from '$lib/components/dashboard/ActionsCostDialog.svelte';
 	import {
 		formatDuration,
 		formatMinutes,
@@ -34,6 +35,7 @@
 
 	let showOptimize = $state(false);
 	let showWorkflowFile = $state(false);
+	let showCostDialog = $state(false);
 	const buildMinutesIcon =
 		'<svg class="size-4 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
 	const skipRateIcon =
@@ -217,13 +219,13 @@
 			class="min-w-[140px] flex-1"
 			title="Build Minutes"
 			value={formatMinutes(detailData.totalMinutes30d)}
-			subtitle={`${formatMinutes(detailData.billableMinutes30d)} billable${
-				detailData.billableMinutes30d !== detailData.totalMinutes30d
-					? ' (mixed runners)'
-					: ' (Linux ×1)'
-			}`}
-			help={`Raw minutes consumed across ${lookbackDescription}. Billable minutes are estimated by applying the runner OS multiplier (Linux ×1, Windows ×2, macOS ×10) from the last 5 sampled runs.`}
+			subtitle={detailData.actionsCostEstimate
+				? `$${detailData.actionsCostEstimate.grossCostUsd.toFixed(2)} sampled estimate`
+				: 'Cost estimate unavailable'}
+			help={`Raw minutes consumed across ${lookbackDescription}. Open the cost estimate for sampled job-level runner pricing and coverage limitations.`}
 			icon={buildMinutesIcon}
+			actionLabel={detailData.actionsCostEstimate ? 'View cost' : undefined}
+			onAction={() => (showCostDialog = true)}
 		/>
 		<MetricCard
 			class="min-w-[140px] flex-1"
@@ -335,9 +337,7 @@
 				title="Minutes by Job"
 				subtitle="Based on last 5 completed runs"
 				totalMinutes={detailData.minutesByJob.reduce((s, j) => s + j.minutes, 0)}
-				totalBillableMinutes={detailData.minutesByJob.reduce((s, j) => s + j.billableMinutes, 0)}
 				totalLabel="sampled"
-				billableIsEstimate={false}
 			/>
 			<MinutesTrendChart
 				data={detailData.minutesTrend}
@@ -393,3 +393,11 @@
 		workflowId={detailData.workflowId}
 	/>
 </div>
+
+{#if showCostDialog && detailData.actionsCostEstimate}
+	<ActionsCostDialog
+		estimate={detailData.actionsCostEstimate}
+		windowLabel={lookbackLabel}
+		onClose={() => (showCostDialog = false)}
+	/>
+{/if}

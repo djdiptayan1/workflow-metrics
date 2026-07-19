@@ -19,19 +19,13 @@
 		title,
 		subtitle = '',
 		totalMinutes,
-		totalBillableMinutes,
-		totalLabel = 'total',
-		billableIsEstimate = false
+		totalLabel = 'total'
 	}: {
 		data: WorkflowMinutesShare[] | JobMinutesShare[];
 		title: string;
 		subtitle?: string;
 		totalMinutes: number;
-		/** Total billable minutes — shown in centre and legend when provided. */
-		totalBillableMinutes?: number;
 		totalLabel?: string;
-		/** When true, marks billable figures with ~ to indicate they are estimates. */
-		billableIsEstimate?: boolean;
 	} = $props();
 
 	// Helper to get display name with fallback
@@ -80,18 +74,30 @@
 	);
 
 	function runnerLabel(rt: RunnerType, detected: boolean): string {
-		if (!detected) return '~linux ×1';
+		if (!detected) return 'unknown';
 		switch (rt) {
 			case 'ubuntu':
-				return 'linux ×1';
+				return 'Linux x64';
+			case 'ubuntu-slim':
+				return 'Linux slim';
+			case 'ubuntu-arm':
+				return 'Linux ARM64';
 			case 'windows':
-				return 'win ×2';
+				return 'Windows x64';
+			case 'windows-arm':
+				return 'Windows ARM64';
 			case 'macos':
-				return 'macos ×10';
+				return 'macOS';
+			case 'macos-large':
+				return 'macOS large';
+			case 'macos-xlarge':
+				return 'macOS xlarge';
+			case 'self-hosted':
+				return 'self-hosted';
 			case 'mixed':
 				return 'mixed';
 			default:
-				return '~linux ×1';
+				return 'unknown';
 		}
 	}
 
@@ -110,10 +116,6 @@
 				return 'bg-sky-100/50 text-sky-600/70 dark:bg-sky-900/20 dark:text-sky-400/60';
 		}
 	}
-
-	const showBillable = $derived(
-		totalBillableMinutes !== undefined && totalBillableMinutes !== totalMinutes
-	);
 
 	// Single-hue indigo ramp — segments are distinguished by lightness, not hue,
 	// keeping the donut on-brand with the rest of the restrained palette.
@@ -261,68 +263,30 @@
 							onmouseenter={(e) => onSegmentEnter(i, e)}
 						/>
 					{/each}
-					<!-- Center label — show billable if it differs from raw -->
-					{#if showBillable && totalBillableMinutes !== undefined}
-						<text
-							x={CX}
-							y={CY - 16}
-							text-anchor="middle"
-							dominant-baseline="middle"
-							class="fill-foreground"
-							style="font-size: 12px; font-weight: 600;"
-						>
-							{billableIsEstimate ? '~' : ''}{formatMinutes(totalBillableMinutes)}
-						</text>
-						<text
-							x={CX}
-							y={CY - 3}
-							text-anchor="middle"
-							dominant-baseline="middle"
-							class="fill-muted-foreground"
-							style="font-size: 10px;"
-						>
-							billable
-						</text>
-						<text
-							x={CX}
-							y={CY + 10}
-							text-anchor="middle"
-							dominant-baseline="middle"
-							class="fill-muted-foreground"
-							style="font-size: 10px;"
-						>
-							{formatMinutes(totalMinutes)} raw
-						</text>
-					{:else}
-						<text
-							x={CX}
-							y={CY - 8}
-							text-anchor="middle"
-							dominant-baseline="middle"
-							class="fill-foreground"
-							style="font-size: 14px; font-weight: 600;"
-						>
-							{formatMinutes(totalMinutes)}
-						</text>
-						<text
-							x={CX}
-							y={CY + 10}
-							text-anchor="middle"
-							dominant-baseline="middle"
-							class="fill-muted-foreground"
-							style="font-size: 10px;"
-						>
-							{totalLabel}
-						</text>
-					{/if}
+					<text
+						x={CX}
+						y={CY - 8}
+						text-anchor="middle"
+						dominant-baseline="middle"
+						class="fill-foreground"
+						style="font-size: 14px; font-weight: 600;"
+					>
+						{formatMinutes(totalMinutes)}
+					</text>
+					<text
+						x={CX}
+						y={CY + 10}
+						text-anchor="middle"
+						dominant-baseline="middle"
+						class="fill-muted-foreground"
+						style="font-size: 10px;"
+					>
+						{totalLabel}
+					</text>
 				</svg>
 
 				<!-- Tooltip -->
 				{#if activeSegment}
-					{@const tooltipEstimated =
-						activeSegment.runnerDetected !== undefined
-							? !activeSegment.runnerDetected
-							: billableIsEstimate}
 					<div
 						class="border-border bg-popover text-popover-foreground pointer-events-none absolute z-10 rounded-md border px-2.5 py-1.5 text-xs shadow-md"
 						style="left: {tooltipX}px; top: {tooltipY}px; max-width: 180px;"
@@ -336,11 +300,6 @@
 						<p class="text-muted-foreground">
 							{formatMinutes(activeSegment.minutes)} raw · {activeSegment.percentage}%
 						</p>
-						{#if activeSegment.billableMinutes !== activeSegment.minutes}
-							<p class="text-muted-foreground">
-								{tooltipEstimated ? '~' : ''}{formatMinutes(activeSegment.billableMinutes)} billable
-							</p>
-						{/if}
 					</div>
 				{/if}
 			</div>
@@ -348,8 +307,6 @@
 			<!-- Legend -->
 			<div class="min-w-0 flex-1 space-y-2.5 py-1">
 				{#each donutSegments.slice(0, 8) as seg (seg.key)}
-					{@const isEstimated =
-						seg.runnerDetected !== undefined ? !seg.runnerDetected : billableIsEstimate}
 					<div class="flex min-w-0 items-start gap-2 text-xs">
 						<span
 							class="mt-0.5 size-2.5 flex-shrink-0 rounded-full"
@@ -373,9 +330,6 @@
 							</div>
 							<p class="text-muted-foreground leading-tight tabular-nums">
 								{formatMinutes(seg.minutes)} raw
-								{#if seg.billableMinutes !== seg.minutes}
-									· {isEstimated ? '~' : ''}{formatMinutes(seg.billableMinutes)} billable
-								{/if}
 							</p>
 						</div>
 						<span class="text-muted-foreground flex-shrink-0 text-[10px] tabular-nums">
@@ -389,22 +343,19 @@
 			</div>
 		</div>
 
-		<!-- Billing note -->
+		<!-- Runner detection note -->
 		<p class="text-muted-foreground border-border border-t pt-3 text-xs">
 			{#if workflowSegmentCount > 0}
 				{#if detectedCount === workflowSegmentCount}
-					Runner types detected from workflow files (Linux ×1 · Windows ×2 · macOS ×10).
+					Runner types detected from workflow files. Open the Build Minutes cost estimate for rates.
 				{:else if detectedCount === 0}
-					Could not detect runner types — billable estimated as Linux ×1. Click a workflow for
-					job-level data.
+					Could not detect runner types. Unknown runners are excluded from cost estimates.
 				{:else}
-					Runner detected for {detectedCount}/{workflowSegmentCount} workflows. Remaining marked ~ (assumed
-					Linux ×1).
+					Runner detected for {detectedCount}/{workflowSegmentCount} workflows. Unknown runners are excluded
+					from cost estimates.
 				{/if}
-			{:else if billableIsEstimate}
-				Billable computed from runner labels on sampled jobs (Linux ×1, Windows ×2, macOS ×10).
 			{:else}
-				Billable minutes computed from runner labels (Linux ×1, Windows ×2, macOS ×10).
+				Runner labels come from the sampled jobs used by this chart.
 			{/if}
 		</p>
 	{/if}

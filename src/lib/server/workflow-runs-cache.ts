@@ -15,7 +15,7 @@ export type ActionsLookback = '7' | '30' | '90' | 'all';
 const CACHE_VERSION = 'v1';
 const STALE_TTL_MS = 24 * 60 * 60 * 1000;
 const RECONCILE_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
-const LOCK_TTL_MS = 30 * 60 * 1000;
+const LOCK_TTL_MS = 90 * 1000;
 const WORKFLOW_FILE_TTL_SECONDS = 60 * 60;
 const MISSING_WORKFLOW_FILE = '__missing__';
 const CHUNK_SIZE = 500;
@@ -37,6 +37,14 @@ export interface PaginatedRuns {
 	total: number;
 	page: number;
 	pageSize: number;
+}
+
+export interface AllTimeImportCheckpoint {
+	nextPage: number;
+	expectedRuns: number;
+	importedRuns: number;
+	startedAt: string;
+	passes: number;
 }
 
 function part(value: string): string {
@@ -64,9 +72,112 @@ function keys(
 		detailSnapshot: (workflowId: number) =>
 			`${base}:snapshot:${lookback}:avg:${averageDurationWindow}:workflow:${workflowId}`,
 		lock: (scope: string) => `${base}:lock:${lookback}:${part(scope)}`,
+		importCheckpoint: `${base}:import:${lookback}`,
 		reconciledAt: `${base}:reconciled-at:${lookback}`,
 		workflowFile: (path: string) => `${base}:workflow-file:${encodeURIComponent(path)}`
 	};
+}
+
+export async function getAllTimeImportCheckpoint(
+	userId: string,
+	owner: string,
+	repo: string
+): Promise<AllTimeImportCheckpoint | null> {
+	const raw = await (await redis()).get(keys(userId, owner, repo, 'all').importCheckpoint);
+	if (!raw) return null;
+	try {
+		return JSON.parse(raw) as AllTimeImportCheckpoint;
+	} catch {
+		return null;
+	}
+}
+
+export async function setAllTimeImportCheckpoint(
+	userId: string,
+	owner: string,
+	repo: string,
+	checkpoint: AllTimeImportCheckpoint
+): Promise<void> {
+	await (
+		await redis()
+	).set(keys(userId, owner, repo, 'all').importCheckpoint, JSON.stringify(checkpoint), {
+		PX: STALE_TTL_MS
+	});
+}
+
+export async function clearAllTimeImportCheckpoint(
+	userId: string,
+	owner: string,
+	repo: string
+): Promise<void> {
+	await (await redis()).del(keys(userId, owner, repo, 'all').importCheckpoint);
+}
+
+export async function clearWorkflowRunIndexes(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback
+): Promise<void> {
+	const client = await redis();
+	const cacheKeys = keys(userId, owner, repo, lookback);
+	let workflowIds: number[] = [];
+	try {
+		workflowIds = JSON.parse((await client.get(cacheKeys.workflowIds)) ?? '[]') as number[];
+	} catch {
+		workflowIds = [];
+	}
+	await client.del([
+		cacheKeys.repoIndex,
+		cacheKeys.workflowIds,
+		...workflowIds.map(cacheKeys.workflowIndex)
+	]);
+}
+
+export async function appendWorkflowRuns(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback,
+	runs: GitHubWorkflowRun[]
+): Promise<number> {
+	const client = await redis();
+	const cacheKeys = keys(userId, owner, repo, lookback);
+	let workflowIds: number[] = [];
+	try {
+		workflowIds = JSON.parse((await client.get(cacheKeys.workflowIds)) ?? '[]') as number[];
+	} catch {
+		workflowIds = [];
+	}
+	const nextWorkflowIds = [...new Set([...workflowIds, ...runs.map((run) => run.workflow_id)])];
+	await client.set(cacheKeys.workflowIds, JSON.stringify(nextWorkflowIds));
+
+	for (let offset = 0; offset < runs.length; offset += CHUNK_SIZE) {
+		const chunk = runs.slice(offset, offset + CHUNK_SIZE);
+		const hash: Record<string, string> = {};
+		const byWorkflow = new Map<number, GitHubWorkflowRun[]>();
+		for (const run of chunk) {
+			hash[String(run.id)] = JSON.stringify(run);
+			const grouped = byWorkflow.get(run.workflow_id) ?? [];
+			grouped.push(run);
+			byWorkflow.set(run.workflow_id, grouped);
+		}
+		await client.hSet(cacheKeys.runs, hash);
+		await client.zAdd(
+			cacheKeys.repoIndex,
+			chunk.map((run) => ({ score: Date.parse(run.created_at) || 0, value: String(run.id) }))
+		);
+		for (const [workflowId, workflowRuns] of byWorkflow) {
+			await client.zAdd(
+				cacheKeys.workflowIndex(workflowId),
+				workflowRuns.map((run) => ({
+					score: Date.parse(run.created_at) || 0,
+					value: String(run.id)
+				}))
+			);
+		}
+	}
+	return client.zCard(cacheKeys.repoIndex);
 }
 
 async function redis(): Promise<RedisClientType> {
@@ -125,6 +236,7 @@ export async function getDashboardSnapshot(
 	if (!raw) return null;
 	try {
 		const snapshot = JSON.parse(raw) as StoredSnapshot;
+		if (!snapshot.dashboardData.actionsCostEstimate) return null;
 		if (
 			[...snapshot.doraWorkflowIds].sort((a, b) => a - b).join(',') !==
 			[...doraWorkflowIds].sort((a, b) => a - b).join(',')
@@ -251,6 +363,12 @@ export async function getWorkflowDetailSnapshot(
 	if (!raw) return null;
 	try {
 		const parsed = JSON.parse(raw) as { data: WorkflowDetailData; fetchedAt: string };
+		if (
+			!parsed.data.actionsCostEstimate ||
+			parsed.data.actionsCostEstimate.basis !== 'sampled-jobs' ||
+			parsed.data.actionsCostEstimate.projectedRuns === undefined
+		)
+			return null;
 		const age = Date.now() - Date.parse(parsed.fetchedAt);
 		if (!Number.isFinite(age) || age > STALE_TTL_MS) return null;
 		return { data: parsed.data, isStale: age > freshnessMs };
@@ -339,6 +457,25 @@ export async function releaseSyncLock(
 		"if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
 		{ keys: [keys(userId, owner, repo, lookback).lock(scope)], arguments: [token] }
 	);
+}
+
+export async function renewSyncLock(
+	userId: string,
+	owner: string,
+	repo: string,
+	lookback: ActionsLookback,
+	token: string,
+	scope = 'repo'
+): Promise<boolean> {
+	const client = await redis();
+	const result = await client.eval(
+		"if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end",
+		{
+			keys: [keys(userId, owner, repo, lookback).lock(scope)],
+			arguments: [token, String(LOCK_TTL_MS)]
+		}
+	);
+	return result === 1;
 }
 
 export async function reconciliationDue(

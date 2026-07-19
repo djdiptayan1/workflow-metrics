@@ -7,6 +7,8 @@ vi.mock('$lib/server/redis', () => ({ getRedisClient: vi.fn() }));
 import { getRedisClient } from '$lib/server/redis';
 import {
 	acquireSyncLock,
+	appendWorkflowRuns,
+	getAllTimeImportCheckpoint,
 	getCachedWorkflowFile,
 	getDashboardSnapshot,
 	getPaginatedRuns,
@@ -14,6 +16,8 @@ import {
 	markReconciled,
 	reconciliationDue,
 	releaseSyncLock,
+	renewSyncLock,
+	setAllTimeImportCheckpoint,
 	setCachedWorkflowFile,
 	setDashboardSnapshot,
 	storeWorkflowRuns
@@ -87,6 +91,11 @@ class FakeRedis {
 	async eval(_script: string, args: { keys: string[]; arguments: string[] }) {
 		const [key] = args.keys;
 		if ((await this.get(key)) !== args.arguments[0]) return 0;
+		if (_script.includes('pexpire')) {
+			const entry = this.strings.get(key);
+			if (entry) entry.expires = Date.now() + Number(args.arguments[1]);
+			return 1;
+		}
 		this.strings.delete(key);
 		return 1;
 	}
@@ -120,7 +129,8 @@ const dashboard = {
 	repo: 'app',
 	totalRuns: 1,
 	doraWorkflowIds: [],
-	timingDataQuality: { repairedRuns: 0, excludedRuns: 0 }
+	timingDataQuality: { repairedRuns: 0, excludedRuns: 0 },
+	actionsCostEstimate: { grossCostUsd: 0 }
 } as unknown as DashboardData;
 
 describe('Redis workflow cache', () => {
@@ -181,6 +191,29 @@ describe('Redis workflow cache', () => {
 		expect(await acquireSyncLock('u1', 'acme', 'app', '30')).toBeNull();
 		await releaseSyncLock('u1', 'acme', 'app', '30', token!);
 		expect(await acquireSyncLock('u1', 'acme', 'app', '30')).toBeTruthy();
+	});
+
+	it('renews a lock only when the caller still owns its token', async () => {
+		const token = await acquireSyncLock('u1', 'acme', 'app', 'all');
+		expect(await renewSyncLock('u1', 'acme', 'app', 'all', token!)).toBe(true);
+		expect(await renewSyncLock('u1', 'acme', 'app', 'all', 'wrong-token')).toBe(false);
+	});
+
+	it('persists resumable checkpoints and deduplicates overlapping import chunks', async () => {
+		await setAllTimeImportCheckpoint('u1', 'acme', 'app', {
+			nextPage: 76,
+			expectedRuns: 26_000,
+			importedRuns: 7_500,
+			startedAt: '2026-07-19T00:00:00.000Z',
+			passes: 0
+		});
+		expect(await getAllTimeImportCheckpoint('u1', 'acme', 'app')).toMatchObject({
+			nextPage: 76,
+			expectedRuns: 26_000
+		});
+		expect(await appendWorkflowRuns('u1', 'acme', 'app', 'all', [run(1), run(2)])).toBe(2);
+		expect(await appendWorkflowRuns('u1', 'acme', 'app', 'all', [run(2), run(3)])).toBe(3);
+		expect(await getWorkflowRuns('u1', 'acme', 'app', 'all')).toHaveLength(3);
 	});
 
 	it('tracks reconciliation and caches missing workflow files', async () => {

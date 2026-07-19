@@ -5,25 +5,36 @@ import {
 	buildDashboardData,
 	createOctokit,
 	fetchIncrementalWorkflowRunsForRepo,
+	fetchWorkflowRunPageChunk,
 	isGitHubUnauthorizedError
 } from '$lib/server/github';
 import { getGitHubAccessToken } from '$lib/server/secrets';
 import {
 	acquireSyncLock,
+	appendWorkflowRuns,
+	clearAllTimeImportCheckpoint,
+	clearWorkflowRunIndexes,
+	getAllTimeImportCheckpoint,
 	getDashboardSnapshot,
 	getWorkflowRuns,
 	markReconciled,
 	reconciliationDue,
 	releaseSyncLock,
+	renewSyncLock,
+	setAllTimeImportCheckpoint,
 	setDashboardSnapshot,
 	storeWorkflowRuns,
 	type ActionsLookback
 } from '$lib/server/workflow-runs-cache';
 import type { GitHubWorkflowRun } from '$lib/types/github';
-import type { AverageDurationWindow, DashboardData } from '$lib/types/metrics';
+import type { AverageDurationWindow, DashboardData, GitHubPlan } from '$lib/types/metrics';
+import { calculateActionsCostEstimate } from '$lib/actions-cost';
+import { getGitHubOwnerPlan } from '$lib/server/github-billing-context';
 import type { RequestHandler } from './$types';
 
 type SyncMode = 'none' | 'cached-runs' | 'cold' | 'incremental' | 'reconcile' | 'locked';
+const ALL_TIME_PAGES_PER_REQUEST = 75;
+const ALL_TIME_PAGE_OVERLAP = 2;
 
 interface DashboardContext {
 	userId: string;
@@ -34,6 +45,8 @@ interface DashboardContext {
 	days: number | null;
 	doraWorkflowIds: number[];
 	octokit: ReturnType<typeof createOctokit>;
+	visibility: 'public' | 'private';
+	plan: GitHubPlan;
 }
 
 interface SyncCallbacks {
@@ -95,6 +108,12 @@ async function syncDashboard(
 			fetchedRuns = nextRuns;
 		}
 	});
+	data.actionsCostEstimate = calculateActionsCostEstimate(
+		data.minutesByWorkflow,
+		context.visibility,
+		context.plan,
+		'workflow-runtime'
+	);
 
 	await storeWorkflowRuns(userId, owner, repo, lookback, fetchedRuns);
 	await setDashboardSnapshot(
@@ -108,6 +127,142 @@ async function syncDashboard(
 	);
 	if (sync === 'cold' || sync === 'reconcile') await markReconciled(userId, owner, repo, lookback);
 	return { data, sync };
+}
+
+interface AllTimeChunkResult {
+	complete: boolean;
+	data?: DashboardData;
+	importedRuns: number;
+	expectedRuns: number;
+}
+
+async function syncAllTimeChunk(
+	context: DashboardContext,
+	token: string,
+	callbacks: SyncCallbacks = {}
+): Promise<AllTimeChunkResult> {
+	let checkpoint = await getAllTimeImportCheckpoint(context.userId, context.owner, context.repo);
+	if (!checkpoint) {
+		await clearWorkflowRunIndexes(context.userId, context.owner, context.repo, 'all');
+		checkpoint = {
+			nextPage: 1,
+			expectedRuns: 0,
+			importedRuns: 0,
+			startedAt: new Date().toISOString(),
+			passes: 0
+		};
+	}
+
+	await renewSyncLock(context.userId, context.owner, context.repo, 'all', token);
+	const startedAt = Date.now();
+	const chunk = await fetchWorkflowRunPageChunk(
+		context.octokit,
+		context.owner,
+		context.repo,
+		checkpoint.nextPage,
+		ALL_TIME_PAGES_PER_REQUEST,
+		(fetched, total, page) => {
+			callbacks.onFetchProgress?.(Math.min(checkpoint.importedRuns + fetched, total), total, page);
+			void renewSyncLock(context.userId, context.owner, context.repo, 'all', token);
+		}
+	);
+	let importedRuns = await appendWorkflowRuns(
+		context.userId,
+		context.owner,
+		context.repo,
+		'all',
+		chunk.runs
+	);
+
+	if (chunk.nextPage !== null) {
+		await setAllTimeImportCheckpoint(context.userId, context.owner, context.repo, {
+			...checkpoint,
+			nextPage: Math.max(1, chunk.nextPage - ALL_TIME_PAGE_OVERLAP),
+			expectedRuns: chunk.expectedRuns,
+			importedRuns
+		});
+		console.info('[workflow-run-import-chunk]', {
+			repository: `${context.owner}/${context.repo}`,
+			startPage: checkpoint.nextPage,
+			pages: chunk.pagesFetched,
+			nextPage: Math.max(1, chunk.nextPage - ALL_TIME_PAGE_OVERLAP),
+			importedRuns,
+			expectedRuns: chunk.expectedRuns,
+			durationMs: Date.now() - startedAt
+		});
+		return { complete: false, importedRuns, expectedRuns: chunk.expectedRuns };
+	}
+
+	// Re-read the newest pages before validation so runs created during a multi-request import are included.
+	const newest = await fetchWorkflowRunPageChunk(
+		context.octokit,
+		context.owner,
+		context.repo,
+		1,
+		ALL_TIME_PAGE_OVERLAP
+	);
+	importedRuns = await appendWorkflowRuns(
+		context.userId,
+		context.owner,
+		context.repo,
+		'all',
+		newest.runs
+	);
+	if (importedRuns !== newest.expectedRuns) {
+		if (importedRuns > newest.expectedRuns) {
+			await clearWorkflowRunIndexes(context.userId, context.owner, context.repo, 'all');
+			importedRuns = 0;
+		}
+		await setAllTimeImportCheckpoint(context.userId, context.owner, context.repo, {
+			...checkpoint,
+			nextPage: 1,
+			expectedRuns: newest.expectedRuns,
+			importedRuns,
+			passes: checkpoint.passes + 1
+		});
+		console.warn('[workflow-run-import-validation]', {
+			repository: `${context.owner}/${context.repo}`,
+			importedRuns,
+			expectedRuns: newest.expectedRuns,
+			action: importedRuns === 0 ? 'restart' : 'rescan'
+		});
+		return { complete: false, importedRuns, expectedRuns: newest.expectedRuns };
+	}
+
+	const runs = await getWorkflowRuns(context.userId, context.owner, context.repo, 'all');
+	callbacks.onComputeStart?.();
+	const data = await buildDashboardData(context.octokit, context.owner, context.repo, {
+		days: null,
+		cachedRuns: runs,
+		doraWorkflowIds: context.doraWorkflowIds,
+		cacheUserId: context.userId,
+		averageDurationWindow: context.averageDurationWindow,
+		onRepairProgress: callbacks.onRepairProgress
+	});
+	data.actionsCostEstimate = calculateActionsCostEstimate(
+		data.minutesByWorkflow,
+		context.visibility,
+		context.plan,
+		'workflow-runtime'
+	);
+	await setDashboardSnapshot(
+		context.userId,
+		context.owner,
+		context.repo,
+		'all',
+		context.averageDurationWindow,
+		data,
+		context.doraWorkflowIds
+	);
+	await markReconciled(context.userId, context.owner, context.repo, 'all');
+	await clearAllTimeImportCheckpoint(context.userId, context.owner, context.repo);
+	console.info('[workflow-run-import-complete]', {
+		repository: `${context.owner}/${context.repo}`,
+		importedRuns,
+		expectedRuns: newest.expectedRuns,
+		durationMs: Date.now() - startedAt
+	});
+	return { complete: true, data, importedRuns, expectedRuns: newest.expectedRuns };
 }
 
 export const GET: RequestHandler = async ({ url, locals, request }) => {
@@ -124,7 +279,7 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 		getGitHubAccessToken(user.id),
 		locals.supabase
 			.from('repositories')
-			.select('id')
+			.select('id, is_private')
 			.eq('user_id', user.id)
 			.eq('owner', owner)
 			.eq('name', repo)
@@ -165,6 +320,7 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 		return unavailable();
 	}
 
+	const octokit = createOctokit(githubAccessToken);
 	const context: DashboardContext = {
 		userId: user.id,
 		owner,
@@ -173,7 +329,9 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 		averageDurationWindow,
 		days,
 		doraWorkflowIds,
-		octokit: createOctokit(githubAccessToken)
+		octokit,
+		visibility: repository.is_private ? 'private' : 'public',
+		plan: await getGitHubOwnerPlan(octokit, owner)
 	};
 	const respond = (data: DashboardData, cache: 'fresh' | 'stale' | 'miss', sync: SyncMode) =>
 		json(data, {
@@ -189,7 +347,9 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 	if (snapshot?.isStale) {
 		const token = await acquireSyncLock(user.id, owner, repo, lookback).catch(() => null);
 		if (token) {
-			const refresh = syncDashboard(context)
+			const refresh = (
+				lookback === 'all' ? syncAllTimeChunk(context, token) : syncDashboard(context)
+			)
 				.catch((cause) => console.warn('[api/dashboard/data] Background refresh failed', cause))
 				.finally(() => releaseSyncLock(user.id, owner, repo, lookback, token).catch(() => {}));
 			if (env.VERCEL) waitUntil(refresh);
@@ -199,7 +359,13 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 	}
 
 	const token = await acquireSyncLock(user.id, owner, repo, lookback).catch(() => null);
-	if (!token) return unavailable();
+	if (!token) {
+		if (lookback === 'all') {
+			const checkpoint = await getAllTimeImportCheckpoint(user.id, owner, repo).catch(() => null);
+			return importPending(checkpoint?.importedRuns ?? 0, checkpoint?.expectedRuns ?? 0);
+		}
+		return unavailable();
+	}
 
 	const cachedRuns = await getWorkflowRuns(user.id, owner, repo, lookback).catch(() => []);
 	const forceCachedRuns = cachedRuns.length > 0;
@@ -208,6 +374,12 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 	}
 
 	try {
+		if (lookback === 'all') {
+			const result = await syncAllTimeChunk(context, token);
+			return result.complete && result.data
+				? respond(result.data, 'miss', 'cold')
+				: importPending(result.importedRuns, result.expectedRuns);
+		}
 		const result = await syncDashboard(context, {}, forceCachedRuns);
 		return respond(result.data, 'miss', result.sync);
 	} catch (cause) {
@@ -222,6 +394,10 @@ type SseEvent =
 	| { event: 'progress'; data: { phase: 'repairing'; completed: number; total: number } }
 	| { event: 'progress'; data: { phase: 'computing' } }
 	| { event: 'complete'; data: DashboardData }
+	| {
+			event: 'continue';
+			data: { importedRuns: number; expectedRuns: number; retryAfterMs: number };
+	  }
 	| { event: 'error'; data: { message: string } };
 
 function streamDashboard(
@@ -242,6 +418,29 @@ function streamDashboard(
 
 	void (async () => {
 		try {
+			if (context.lookback === 'all') {
+				const result = await syncAllTimeChunk(context, token, {
+					onFetchProgress: (fetched, total, page) => {
+						writeProgress({
+							event: 'progress',
+							data: { phase: 'fetching', fetched, total, page }
+						});
+					},
+					onRepairProgress: (completed, total) => {
+						writeProgress({ event: 'progress', data: { phase: 'repairing', completed, total } });
+					},
+					onComputeStart: () => writeProgress({ event: 'progress', data: { phase: 'computing' } })
+				});
+				if (result.complete && result.data) {
+					await write({ event: 'complete', data: result.data });
+				} else {
+					await write({
+						event: 'continue',
+						data: { ...result, retryAfterMs: 250 }
+					});
+				}
+				return;
+			}
 			const result = await syncDashboard(
 				context,
 				{
@@ -293,6 +492,13 @@ function unavailable(): Response {
 	return json(
 		{ message: 'Workflow data cache is temporarily unavailable. Please retry.', retryable: true },
 		{ status: 503, headers: { 'Retry-After': '3' } }
+	);
+}
+
+function importPending(importedRuns: number, expectedRuns: number): Response {
+	return json(
+		{ importing: true, importedRuns, expectedRuns, retryAfterMs: 1_000 },
+		{ status: 202, headers: { 'Retry-After': '1' } }
 	);
 }
 

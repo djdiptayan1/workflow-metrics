@@ -20,6 +20,8 @@ import {
 } from '$lib/server/workflow-runs-cache';
 import type { PageServerLoad } from './$types';
 import type { AverageDurationWindow } from '$lib/types/metrics';
+import { calculateActionsCostEstimate } from '$lib/actions-cost';
+import { getGitHubOwnerPlan } from '$lib/server/github-billing-context';
 
 const MAX_TREND_POINTS = 500;
 const compactDetailData = (detailData: Awaited<ReturnType<typeof buildWorkflowDetailData>>) => {
@@ -59,7 +61,7 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 	// Check user has access to this repo
 	const { data: repo } = await locals.supabase
 		.from('repositories')
-		.select('id')
+		.select('id, is_private')
 		.eq('user_id', user.id)
 		.eq('owner', ownerParam)
 		.eq('name', repoParam)
@@ -93,6 +95,7 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 		: 'all available history';
 
 	const octokit = createOctokit(accessToken);
+	const plan = await getGitHubOwnerPlan(octokit, ownerParam);
 
 	try {
 		const provider = (settings?.ai_provider ?? 'openai') as AIProvider;
@@ -150,6 +153,16 @@ export const load: PageServerLoad = async ({ locals, url, params }) => {
 					fetchedRuns = runs;
 				}
 			});
+			detailData.actionsCostEstimate = calculateActionsCostEstimate(
+				detailData.minutesByJob,
+				repo.is_private ? 'private' : 'public',
+				plan,
+				'sampled-jobs',
+				{
+					sampledRuns: detailData.jobMinutesSampleRunCount,
+					projectedRuns: detailData.completedRunCount
+				}
+			);
 			if (refreshRuns || cachedRuns.length === 0) {
 				await storeSingleWorkflowRuns(
 					user.id,

@@ -10,6 +10,7 @@
 	import RecentRuns from '$lib/components/dashboard/RecentRuns.svelte';
 	import WorkflowList from '$lib/components/dashboard/WorkflowList.svelte';
 	import DoraWorkflowDialog from '$lib/components/dashboard/DoraWorkflowDialog.svelte';
+	import ActionsCostDialog from '$lib/components/dashboard/ActionsCostDialog.svelte';
 	import {
 		formatDuration,
 		formatMinutes,
@@ -36,6 +37,7 @@
 
 	// DORA workflow dialog state
 	let showDoraDialog = $state(false);
+	let showCostDialog = $state(false);
 	let doraRefreshController: AbortController | null = null;
 
 	// Progress state for the SSE loading bar (only used during cache-miss fetches)
@@ -85,6 +87,16 @@
 			signal,
 			headers: { Accept: 'text/event-stream' }
 		});
+		if (res.status === 202) {
+			const pending = (await res.json()) as {
+				importedRuns?: number;
+				expectedRuns?: number;
+				retryAfterMs?: number;
+			};
+			onProgress?.(pending.importedRuns ?? 0, pending.expectedRuns ?? 0);
+			await new Promise((resolve) => setTimeout(resolve, pending.retryAfterMs ?? 1_000));
+			return fetchDashboardData(owner, name, days, signal, onProgress);
+		}
 
 		if (res.status === 401) {
 			goto('/auth/login?error=' + encodeURIComponent('Session expired. Please sign in again.'));
@@ -151,6 +163,16 @@
 					}
 				} else if (eventName === 'complete') {
 					return { data: payload as DashboardData, isStale: false };
+				} else if (eventName === 'continue') {
+					const next = payload as {
+						importedRuns?: number;
+						expectedRuns?: number;
+						retryAfterMs?: number;
+					};
+					onProgress?.(next.importedRuns ?? 0, next.expectedRuns ?? 0);
+					await reader.cancel();
+					await new Promise((resolve) => setTimeout(resolve, next.retryAfterMs ?? 250));
+					return fetchDashboardData(owner, name, days, signal, onProgress);
 				} else if (eventName === 'error') {
 					const e = payload as { message?: string };
 					throw new Error(e.message ?? 'Failed to load dashboard data.');
@@ -403,7 +425,8 @@
 						{#if loadPhase === 'connecting'}
 							Connecting to GitHub…
 						{:else if loadPhase === 'fetching'}
-							Loading workflow runs · {progressFetched.toLocaleString()} / {progressTotal.toLocaleString()}
+							{data.actionsLookback === 'all' ? 'Imported' : 'Loading workflow runs'} · {progressFetched.toLocaleString()}
+							/ {progressTotal.toLocaleString()} runs
 						{:else if loadPhase === 'repairing'}
 							Repairing workflow timing data…
 						{:else if loadPhase === 'computing'}
@@ -504,11 +527,13 @@
 				class="min-w-[140px] flex-1"
 				title="Build Minutes"
 				value={formatMinutes(dashboardData.totalMinutes30d)}
-				subtitle="{dashboardData.billableIsEstimate ? '~' : ''}{formatMinutes(
-					dashboardData.billableMinutes30d
-				)} billable{dashboardData.billableIsEstimate ? ' (partial est.)' : ''}"
-				help="Raw minutes consumed across {timeWindowDescription}. Billable minutes use runner types detected from your workflow YAML files (Linux ×1, Windows ×2, macOS ×10). Workflows with dynamic runner expressions are estimated as Linux ×1."
+				subtitle={dashboardData.actionsCostEstimate
+					? `$${dashboardData.actionsCostEstimate.grossCostUsd.toFixed(2)} on-demand estimate`
+					: 'Cost estimate unavailable'}
+				help="Raw minutes consumed across {timeWindowDescription}. Open the cost estimate for runner pricing, included-minute context, and coverage limitations."
 				icon={'<svg class="size-4 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>'}
+				actionLabel={dashboardData.actionsCostEstimate ? 'View cost' : undefined}
+				onAction={() => (showCostDialog = true)}
 			/>
 			<MetricCard
 				class="min-w-[140px] flex-1"
@@ -757,9 +782,7 @@
 						title="Minutes by Workflow"
 						subtitle="Breakdown of build time consumed per workflow"
 						totalMinutes={dashboardData.totalMinutes30d}
-						totalBillableMinutes={dashboardData.billableMinutes30d}
 						totalLabel="raw mins"
-						billableIsEstimate={dashboardData.billableIsEstimate}
 					/>
 					<MinutesTrendChart
 						data={dashboardData.minutesTrend}
@@ -947,6 +970,14 @@
 		selectedIds={dashboardData.doraWorkflowIds ?? []}
 		onSave={handleSaveDoraWorkflows}
 		onClose={() => (showDoraDialog = false)}
+	/>
+{/if}
+
+{#if showCostDialog && dashboardData?.actionsCostEstimate}
+	<ActionsCostDialog
+		estimate={dashboardData.actionsCostEstimate}
+		windowLabel={timeWindowLabel}
+		onClose={() => (showCostDialog = false)}
 	/>
 {/if}
 
